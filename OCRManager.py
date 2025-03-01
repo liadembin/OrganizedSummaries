@@ -23,13 +23,17 @@ summarizer = None
 
 
 def summarize_paragraph(paragraph: str, sentences_count=5) -> str:
+    if len(paragraph) < 10:
+        return paragraph  # If the paragraph is too short, don't summarize it
     if HAS_SHITTONE_OF_RAM:
         global summarizer
         if summarizer is None:
             summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
-        return summarizer(paragraph, max_length=len(paragraph) - 1, min_length=10)[0][
-            "summary_text"
-        ]
+        return summarizer(
+            paragraph,
+            max_length=len(paragraph) - 1,
+            min_length=min(len(paragraph) - 1, 10),
+        )[0]["summary_text"]
 
     parser = PlaintextParser.from_string(paragraph, Tokenizer("english"))
 

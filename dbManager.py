@@ -1,3 +1,4 @@
+from typing import Any
 from dotenv import load_dotenv
 import os
 from typing import Optional
@@ -39,6 +40,7 @@ class Summary:
     shareLink: str
     path_to_summary: str
     content: Optional[str] = None
+    font: Optional[str] = "Arial"
     createTime: datetime.datetime = field(default_factory=datetime.datetime.now)
     updateTime: datetime.datetime = field(default_factory=datetime.datetime.now)
 
@@ -46,7 +48,7 @@ class Summary:
 class DbManager:
     def __init__(self):
         self.connection: Optional[MySQLConnection | PooledMySQLConnection] = None
-        self.cursor = None
+        self.cursor: Any = None
         self.id_per_sock = {}
 
     def get_is_sock_logged(self, sock):
@@ -163,7 +165,7 @@ class DbManager:
             return False
 
     def insert_summary(
-        self, title: str, content: str, created_by: int, tags: List[str]
+        self, title: str, content: str, created_by: int, font: str
     ) -> int:
         """Insert new summary and save to disk, return its ID."""
         try:
@@ -187,10 +189,10 @@ class DbManager:
                 f.write(content)
             # Insert summary record
             query = """
-                INSERT INTO Summary (ownerId, shareLink, path_to_summary)
-                VALUES (%s, %s, %s)
+                INSERT INTO Summary (ownerId, shareLink, path_to_summary,font)
+                VALUES (%s, %s, %s,%s)
             """
-            self.cursor.execute(query, (created_by, title, filepath))
+            self.cursor.execute(query, (created_by, title, filepath, font))
             self.connection.commit()
             # Get the maximum ID after insertion
             self.cursor.execute("SELECT MAX(id) FROM Summary")
@@ -208,6 +210,32 @@ class DbManager:
             query = "SELECT * FROM Summary WHERE id = %s"
             self.cursor.execute(query, (summary_id,))
             summary_data = self.cursor.fetchone()
+            print(summary_data)
+            if summary_data:
+                # Read file contents if path exists
+                if summary_data["path_to_summary"] and os.path.exists(
+                    summary_data["path_to_summary"]
+                ):
+                    with open(
+                        summary_data["path_to_summary"], "r", encoding="utf-8"
+                    ) as f:
+                        summary_data["content"] = f.read()
+                return Summary(**summary_data)
+
+            return None
+
+        except (Error, IOError) as e:
+            print(f"Error getting summary: {e}")
+            return None
+
+    def get_summary_by_link(self, link: str) -> Optional[Summary]:
+        try:
+            query = "SELECT * FROM Summary WHERE LOWER(shareLink) = LOWER(%s)"
+            self.cursor.execute(query, (link,))
+            # print the query being run to check if it is correct
+
+            summary_data = self.cursor.fetchone()
+
             print(summary_data)
             if summary_data:
                 # Read file contents if path exists
@@ -288,7 +316,7 @@ class DbManager:
         """Insert a new event for a user with datetime."""
         try:
             query = """
-            INSERT INTO Event (userId, event_title, event_date) 
+            INSERT INTO Event (userId, event_title, event_date)
             VALUES (%s, %s, %s)
             """
             self.cursor.execute(query, (user_id, title, datetime_str))
@@ -748,29 +776,21 @@ def demo_event_operations(db: DbManager, user_id: str) -> Optional[str]:
 
 def main():
     load_dotenv()  # Load environment variables from .env file
-
-    # Get database configuration from environment variables
-    # db_url = os.getenv("DATABASE_URL")
-    # if not db_url:
-    #     print("DATABASE_URL not found in environment variables")
-    #     return
-    #
-    db = DbManager()
     try:
-        # Connect to database
-        print("Connecting to database...")
-        db.connect_to_db(
-            {
-                "host": "localhost",
-                "user": "root",
-                "password": os.getenv("DB_PASSWORD")
+        db = DbManager()
+        db.connect_to_db({
+            "host": "localhost",
+            "user": "root",
+            "password": (
+                os.getenv("DB_PASSWORD")
                 if os.getenv("DB_PASSWORD")
-                else "liad8888",
-                "database": "finalprojtest",
-                "port": 3306,
-            }
-        )
-
+                else "liad8888"
+                if os.getenv("DB_PASSWORD")
+                else "liad8888"
+            ),
+            "database": "finalprojtest",
+            "port": 3306,
+        })
         # Demonstrate user operations
         user_id = demo_user_operations(db)
         print("Uid: ", user_id)
@@ -808,4 +828,5 @@ def main():
 
 
 if __name__ == "__main__":
+    main()
     main()

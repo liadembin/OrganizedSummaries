@@ -86,8 +86,7 @@ class LoginFrame(wx.Frame):
         events_list.InsertColumn(2, "Days Away", width=100)
 
         for event in sorted_events:
-            event_date = datetime.strptime(
-                event["event_date"], "%Y-%m-%d").date()
+            event_date = datetime.strptime(event["event_date"], "%Y-%m-%d").date()
             days_away = (event_date - datetime.now().date()).days
 
             index = events_list.InsertItem(0, event["event_title"])
@@ -98,8 +97,7 @@ class LoginFrame(wx.Frame):
 
         # Continue button
         continue_button = wx.Button(panel, label="Continue")
-        continue_button.Bind(
-            wx.EVT_BUTTON, lambda event: dialog.EndModal(wx.ID_OK))
+        continue_button.Bind(wx.EVT_BUTTON, lambda event: dialog.EndModal(wx.ID_OK))
         vbox.Add(continue_button, flag=wx.ALIGN_CENTER | wx.ALL, border=10)
 
         panel.SetSizer(vbox)
@@ -112,8 +110,7 @@ class LoginFrame(wx.Frame):
 
         success, events = self.authenticate(username, password)
         if success:
-            wx.MessageBox("Login successful!", "Info",
-                          wx.OK | wx.ICON_INFORMATION)
+            wx.MessageBox("Login successful!", "Info", wx.OK | wx.ICON_INFORMATION)
             self.open_main_frame(username, events)
         else:
             wx.MessageBox(
@@ -123,17 +120,20 @@ class LoginFrame(wx.Frame):
             )
 
     def authenticate(self, username, password) -> Tuple[bool, List[Any]]:
-        self.net.send_message(self.net.build_message(
-            "LOGIN", [username, password]))
+        self.net.send_message(self.net.build_message("LOGIN", [username, password]))
         msg = self.net.recv_message()
-        code, params = self.net.get_message_code(
-            msg), self.net.get_message_params(msg)
+        code, params = self.net.get_message_code(msg), self.net.get_message_params(msg)
         print(f"PARAMS({len(params)}): ", params)
         if "LOGIN_SUCCESS" in code:
             # [pickle.loads(base64.b64decode(x)) for x in params]
-            return True, [pickle.loads(base64.b64decode(x)) for x in params] if len(
-                params
-            ) > 1 else []
+            return (
+                True,
+                (
+                    [pickle.loads(base64.b64decode(x)) for x in params]
+                    if len(params) > 1
+                    else []
+                ),
+            )
         return False, []
 
     def open_main_frame(self, username, events):
@@ -215,15 +215,12 @@ class RegisterDialog(wx.Dialog):
         confirm_password = self.confirm_password_input.GetValue()
 
         if password != confirm_password:
-            wx.MessageBox("Passwords do not match!",
-                          "Error", wx.OK | wx.ICON_ERROR)
+            wx.MessageBox("Passwords do not match!", "Error", wx.OK | wx.ICON_ERROR)
             return
 
-        self.net.send_message(self.net.build_message(
-            "REGISTER", [username, password]))
+        self.net.send_message(self.net.build_message("REGISTER", [username, password]))
         msg = self.net.recv_message()
-        code, params = self.net.get_message_code(
-            msg), self.net.get_message_params(msg)
+        code, params = self.net.get_message_code(msg), self.net.get_message_params(msg)
         if "REGISTER_SUCCESS" in code:
             wx.MessageBox(
                 "Registration successful! You can now log in.",

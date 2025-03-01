@@ -9,6 +9,7 @@ from base64 import b64encode, b64decode
 import os
 import hashlib
 from typing import Tuple, Optional
+
 # import logging
 
 
@@ -88,8 +89,7 @@ def run_test_case(description, func, expected_success, *args, **kwargs):
             print(colored(f"✅ PASS: {description}", "green"))
             print(f"Result: {result}\n")
         else:
-            print(
-                colored(f"❌ FAIL: {description} (Unexpected success)", "red"))
+            print(colored(f"❌ FAIL: {description} (Unexpected success)", "red"))
             print(f"Result: {result}\n")
 
     except Exception as e:
@@ -97,8 +97,7 @@ def run_test_case(description, func, expected_success, *args, **kwargs):
             print(colored(f"❌ FAIL: {description}", "red"))
             print("Error:", traceback.format_exc())
         else:
-            print(
-                colored(f"✅ PASS: {description} (Expected failure)", "green"))
+            print(colored(f"✅ PASS: {description} (Expected failure)", "green"))
         print()
 
 
@@ -136,8 +135,7 @@ class TestCryptManager(unittest.TestCase):
             log_success("Hashing test passed (invalid inputs).")
 
     def test_encrypt_data_valid(self):
-        self.manager.aes_key = get_random_bytes(
-            16)  # Set AES key for encryption
+        self.manager.aes_key = get_random_bytes(16)  # Set AES key for encryption
         data = b"Secret data"
         encrypted_data, iv = self.manager.encrypt_data(data)
 
@@ -178,12 +176,10 @@ class TestCryptManager(unittest.TestCase):
         # Check if decryption with private key works
         decrypted_data = self.manager.decrypt_rsa(encrypted_data)
         if decrypted_data != data:
-            log_failure(
-                "Failed RSA encryption-decryption test (valid RSA key).")
+            log_failure("Failed RSA encryption-decryption test (valid RSA key).")
             self.assertTrue(False)
         else:
-            log_success(
-                "RSA encryption-decryption test passed (valid RSA key).")
+            log_success("RSA encryption-decryption test passed (valid RSA key).")
 
     def test_encrypt_rsa_invalid_key(self):
         invalid_public_key = get_random_bytes(2048)  # Invalid key
@@ -201,12 +197,10 @@ class TestCryptManager(unittest.TestCase):
 
         # Check if the length of random bytes is correct
         if len(random_bytes) != length:
-            log_failure(
-                f"Failed random byte generation test (length {length}).")
+            log_failure(f"Failed random byte generation test (length {length}).")
             self.assertTrue(False)
         else:
-            log_success(
-                f"Random byte generation test passed (length {length}).")
+            log_success(f"Random byte generation test passed (length {length}).")
 
     def test_check_hash_valid(self):
         password = "password123"

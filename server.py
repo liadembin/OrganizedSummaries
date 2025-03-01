@@ -54,15 +54,17 @@ def handle_login(db_manager: DbManager) -> Callable:
         net.send_message(
             net.build_message(
                 "LOGIN_SUCCESS" if loged else "LOGIN_FAIL",
-                []
-                if not loged
-                else [
-                    base64.b64encode(pickle.dumps(eve)).decode()
-                    for eve in filter(
-                        lambda x: x["event_date"] < datetime.datetime.now(),
-                        events,
-                    )
-                ],
+                (
+                    []
+                    if not loged
+                    else [
+                        base64.b64encode(pickle.dumps(eve)).decode()
+                        for eve in filter(
+                            lambda x: x["event_date"] < datetime.datetime.now(),
+                            events,
+                        )
+                    ]
+                ),
             )
         )
         # net.send_message(net.build_message("LOGIN_FAIL", []))
@@ -108,14 +110,16 @@ def handle_summaries(db_manager) -> Callable:
 
 
 def handle_save(db_manager) -> Callable:
-    def handle_save_in(title, summary, *, net: networkManager.NetworkManager) -> bool:
+    def handle_save_in(
+        title, summary, font, *, net: networkManager.NetworkManager
+    ) -> bool:
         if db_manager.get_id_per_sock(net.sock) == -1:
             print("NOT logged in")
             net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
             return True
 
         db_manager.insert_summary(
-            title, summary, db_manager.get_id_per_sock(net.sock), []
+            title, summary, db_manager.get_id_per_sock(net.sock), font
         )
         net.send_message(net.build_message("SAVE_SUCCESS", []))
         return False
@@ -316,12 +320,19 @@ def handle_get_summary(db_manager) -> Callable:
         print("Checking db")
         summ: Summary = db_manager.get_summary(sid)
         print("Sending summary: ", summ)
+        if summ is None:
+            net.send_message(net.build_message("ERROR", ["SUMMARY NOT FOUND"]))
+            return True
+        print("Sending summary: ", summ)
         with open(summ.path_to_summary, "rb") as f:
             data = f.read()
         print("Data: ", data)
 
         net.send_message(
-            net.build_message("TAKESUMMARY", [base64.b64encode(data).decode()])
+            net.build_message(
+                "TAKESUMMARY",
+                [base64.b64encode(pickle.dumps({"data": data, "summ": summ})).decode()],
+            )
         )
         return False
 
@@ -329,6 +340,28 @@ def handle_get_summary(db_manager) -> Callable:
 
 
 # Add this function to your server.py file
+def handle_get_summary_by_link(db_manager) -> Callable:
+    def handle_inner(link, net: networkManager.NetworkManager) -> bool:
+        id = db_manager.get_id_per_sock(net.sock)
+        if id == -1:
+            print("NOT logged in")
+            net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
+            return True
+        print("Checking db")
+        summ: Summary = db_manager.get_summary_by_link(link)
+        print("Sending summary: ", summ)
+        if summ is None:
+            net.send_message(net.build_message("ERROR", ["SUMMARY NOT FOUND"]))
+            return True
+        with open(summ.path_to_summary, "rb") as f:
+            data = f.read()
+        print("Data: ", data)
+        net.send_message(
+            net.build_message("TAKESUMMARY", [base64.b64encode(data).decode()])
+        )
+        return False
+
+    return handle_inner
 
 
 def handle_get_events(db_manager) -> Callable:
@@ -364,9 +397,9 @@ def thread_main(sock, addr, crypt):
         {
             "host": "localhost",
             "user": "root",
-            "password": os.getenv("DB_PASSWORD")
-            if os.getenv("DB_PASSWORD")
-            else "liad8888",
+            "password": (
+                os.getenv("DB_PASSWORD") if os.getenv("DB_PASSWORD") else "liad8888"
+            ),
             "database": "finalproj",
             "port": 3306,
         }
@@ -386,6 +419,7 @@ def thread_main(sock, addr, crypt):
     net.add_handler("GETSUMMARY", handle_get_summary(db_manager))
     net.add_handler("GETEVENTS", handle_get_events(db_manager))
     net.add_handler("DELETEEVENT", handle_delete_event(db_manager))
+    net.add_handler("GETSUMMARYLINK", handle_get_summary_by_link(db_manager))
     while True:
         exited = net.wait_recv()
         if exited:
@@ -425,4 +459,5 @@ if __name__ == "__main__":
     # )
 
     crypt = cryptManager.CryptManager(rsa_key)
+    main(sock, crypt)
     main(sock, crypt)

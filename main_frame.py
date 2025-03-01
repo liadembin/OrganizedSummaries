@@ -1,88 +1,18 @@
+import tempfile
+import shutil
 import datetime
+from typing import Dict
 import wx
 from wx import adv
 from networkManager import NetworkManager
 import base64
 import pickle
 import os
-
-
-class SummaryCarousel(wx.Dialog):
-    def __init__(self, summaries, net, parent):
-        super().__init__(None, title="Summaries Carousel", size=(600, 400))
-        self.summaries = summaries
-        self.parent = parent
-        # Main layout
-        panel = wx.Panel(self)
-        vbox = wx.BoxSizer(wx.VERTICAL)
-
-        # Listbox to display summaries
-        self.summary_list = wx.ListBox(panel, style=wx.LB_SINGLE)
-        for summ in self.summaries:
-            display_text = f"{summ.shareLink} - By User {summ.ownerId} - Created on {summ.createTime.strftime('%Y-%m-%d %H:%M:%S')}"
-            self.summary_list.Append(display_text)
-
-        vbox.Add(self.summary_list, proportion=1, flag=wx.EXPAND | wx.ALL, border=10)
-
-        # Buttons
-        hbox = wx.BoxSizer(wx.HORIZONTAL)
-        open_button = wx.Button(panel, label="Open")
-        close_button = wx.Button(panel, label="Close")
-        hbox.Add(open_button, flag=wx.ALL, border=5)
-        hbox.Add(close_button, flag=wx.ALL, border=5)
-
-        vbox.Add(hbox, flag=wx.ALIGN_CENTER | wx.ALL, border=10)
-        panel.SetSizer(vbox)
-
-        # Bind events
-        open_button.Bind(wx.EVT_BUTTON, self.on_open_summary)
-        close_button.Bind(wx.EVT_BUTTON, self.on_close)
-        self.net = net
-
-    def on_open_summary(self, event):
-        selection = self.summary_list.GetSelection()
-        if selection == wx.NOT_FOUND:
-            wx.MessageBox(
-                "Please select a summary to open.",
-                "No Selection",
-                wx.OK | wx.ICON_WARNING,
-            )
-            return
-
-        selected_summary = self.summaries[selection]
-        print(selected_summary)
-        wx.MessageBox(
-            f"Opening summary:\n\n"
-            f"Name: {selected_summary.shareLink}\n"
-            f"Path: {selected_summary.path_to_summary}",
-            "Open Summary",
-            wx.OK | wx.ICON_INFORMATION,
-        )
-        self.net.send_message(
-            self.net.build_message("GETSUMMARY", [str(selected_summary.id)])
-        )
-        print("Sent get summary message")
-        self.net.sock.settimeout(5)
-        try:
-            cont = base64.b64decode(
-                self.net.get_message_params(self.net.recv_message())[0]
-            ).decode()
-        except Exception as e:
-            print("Error: ", e)
-            wx.MessageBox(
-                "Error: Could not retrieve summary content.",
-                "Error",
-                wx.OK | wx.ICON_ERROR,
-            )
-            self.Close()
-            return
-
-        print("THE CONTENT: ", cont)
-        self.parent.summary_box.SetValue(cont)
-        self.Close()
-
-    def on_close(self, event):
-        self.Close()
+import urllib
+import urllib.request
+import wx.html2
+import wx.adv
+import pdfkit
 
 
 class MainFrame(wx.Frame):
@@ -90,6 +20,7 @@ class MainFrame(wx.Frame):
         super().__init__(None, title="App Dashboard", size=(800, 600))
         self.net = net
         self.username = username
+        self.html_content = ""  # To store HTML content
 
         # Main panel
         panel = wx.Panel(self)
@@ -103,6 +34,8 @@ class MainFrame(wx.Frame):
         share_button = wx.Button(panel, label="Share")
         see_linked_button = wx.Button(panel, label="See Linked")
         browse_data_button = wx.Button(panel, label="Browse Summaries")
+        font_button = wx.Button(panel, label="Font Options")
+        font_button.Bind(wx.EVT_BUTTON, self.on_font_selector)
         save_button = wx.Button(panel, label="Save")
         save_button.Bind(wx.EVT_BUTTON, self.on_save)
 
@@ -115,6 +48,7 @@ class MainFrame(wx.Frame):
         hbox_top.Add(share_button, flag=wx.ALL, border=5)
         hbox_top.Add(see_linked_button, flag=wx.ALL, border=5)
         hbox_top.Add(browse_data_button, flag=wx.ALL, border=5)
+        hbox_top.Add(font_button, flag=wx.ALL, border=5)
         add_event_button = wx.Button(panel, label="Add Event")
         add_event_button.Bind(wx.EVT_BUTTON, self.on_add_event)
         hbox_top.Add(add_event_button, flag=wx.ALL, border=5)
@@ -123,9 +57,35 @@ class MainFrame(wx.Frame):
         hbox_top.Add(view_events_button, flag=wx.ALL, border=5)
         vbox.Add(hbox_top, flag=wx.EXPAND | wx.ALL, border=10)
 
-        # Big text box for summary
-        self.summary_box = wx.TextCtrl(panel, style=wx.TE_MULTILINE)
-        vbox.Add(self.summary_box, proportion=1, flag=wx.EXPAND | wx.ALL, border=10)
+        # Split panel for editor and HTML view
+        self.splitter = wx.SplitterWindow(panel, style=wx.SP_LIVE_UPDATE)
+
+        # Text editor for input
+        self.editor_panel = wx.Panel(self.splitter)
+        editor_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.editor = wx.TextCtrl(self.editor_panel, style=wx.TE_MULTILINE)
+        self.editor.Bind(wx.EVT_TEXT, self.on_text_input)
+        refresh_button = wx.Button(self.editor_panel, label="Refresh HTML View")
+        refresh_button.Bind(wx.EVT_BUTTON, self.on_refresh_html)
+        editor_sizer.Add(self.editor, proportion=1, flag=wx.EXPAND | wx.ALL, border=5)
+        editor_sizer.Add(refresh_button, flag=wx.ALL, border=5)
+        self.editor_panel.SetSizer(editor_sizer)
+
+        # HTML display panel
+        self.html_panel = wx.Panel(self.splitter)
+        html_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.html_window = wx.html2.WebView.New(self.html_panel)
+        self.html_window.Bind(wx.html2.EVT_WEBVIEW_NAVIGATING, self.on_link_clicked)
+        html_sizer.Add(
+            self.html_window, proportion=1, flag=wx.EXPAND | wx.ALL, border=5
+        )
+        self.html_panel.SetSizer(html_sizer)
+
+        # Set up splitter
+        self.splitter.SplitVertically(self.editor_panel, self.html_panel)
+        self.splitter.SetSashPosition(400)
+
+        vbox.Add(self.splitter, proportion=1, flag=wx.EXPAND | wx.ALL, border=10)
 
         # Bottom controls (Export, Import, Summarize)
         hbox_bottom = wx.BoxSizer(wx.HORIZONTAL)
@@ -139,7 +99,6 @@ class MainFrame(wx.Frame):
         import_button = wx.Button(panel, label="Import")
         import_button.Bind(wx.EVT_BUTTON, self.show_import_menu)
         hbox_bottom.Add(import_button, flag=wx.ALL, border=5)
-        # In the hbox_top sizer, add:
 
         # Summarize button
         summarize_button = wx.Button(panel, label="Summarize with LLM")
@@ -155,20 +114,343 @@ class MainFrame(wx.Frame):
         # Bind browse data button
         browse_data_button.Bind(wx.EVT_BUTTON, self.on_browse_data)
 
+        # Set default font info
+        self.current_font = {"name": "Blackadder ITC", "url": None, "from_url": False}
+        font = wx.Font(
+            12,
+            wx.FONTFAMILY_DEFAULT,
+            wx.FONTSTYLE_NORMAL,
+            wx.FONTWEIGHT_NORMAL,
+            False,
+            self.current_font["name"],
+        )
+        self.editor.SetFont(font)
+        # Initialize HTML view
+        self.update_html_view()
+
+    def on_font_selector(self, event):
+        dialog = FontSelectorDialog(self, self.net)
+        if dialog.ShowModal() == wx.ID_OK:
+            font_name = dialog.selected_font
+            from_url = dialog.from_url
+            font_url = dialog.url_input.GetValue() if from_url else None
+            font_path = dialog.custom_font_path if from_url else None
+
+            # Store the selected font information
+            self.current_font = {
+                "name": font_name,
+                "url": font_url,
+                "from_url": from_url,
+            }
+            print(self.current_font)
+            # Apply the font to the editor
+            font = wx.Font(
+                12,
+                wx.FONTFAMILY_DEFAULT,
+                wx.FONTSTYLE_NORMAL,
+                wx.FONTWEIGHT_NORMAL,
+                False,
+                font_name,
+            )
+            self.editor.SetFont(font)
+
+            # If it's a custom font, upload it to the server
+            if from_url and font_path:
+                # self.upload_font_to_server(font_path, font_name, font_url)
+                print("Uploading font to server")
+            # Update the HTML view with the new font
+            self.update_html_view()
+
+        dialog.Destroy()
+
+    def on_text_input(self, event):
+        # Check for special commands that might need to be processed immediately
+        text_pos = self.editor.GetInsertionPoint() - 1
+        if text_pos < 2:
+            return self.update_html_view()
+        cont = self.editor.GetValue()
+
+        # Adjust for newlines
+        text_pos -= 1 * cont.count("\n", 0, text_pos)
+        if cont[text_pos] != "\n":
+            self.update_html_view()
+            return
+        prev_back_n = cont.rfind("\n", 0, text_pos - 1)
+        if prev_back_n == -1:
+            prev_back_n = 0
+        line = cont[prev_back_n:text_pos].strip()
+
+        if line.startswith("###"):
+            print("Found special line: ", line)
+            print("Thats the speciak!!!!!!!!!!!")
+        self.update_html_view()
+
+    def on_refresh_html(self, event):
+        self.update_html_view()
+
+    def update_html_view(self):
+        """Convert text content to HTML and update the HTML window"""
+        content = self.editor.GetValue()
+        html = self.convert_text_to_html(content)
+        self.html_content = html
+        self.html_window.SetPage(html, "about:blank")
+
+    def html_to_text(self, content):
+        """Convert HTML back to text with special markup
+
+        This function reverses the convert_text_to_html function by extracting
+        text and special markup from HTML content.
+        """
+        import re
+        from html import unescape
+
+        # Initialize result
+        result = []
+
+        # Extract body content (ignore head, styles, etc.)
+        body_match = re.search(r"<body>(.*?)</body>", content, re.DOTALL)
+        if not body_match:
+            return ""  # No body found
+
+        body_content = body_match.group(1)
+
+        # Process tables
+        in_table = False
+        table_rows = []
+
+        # Use a simple state machine to process the content
+        i = 0
+        content_length = len(body_content)
+
+        while i < content_length:
+            # Check for table start
+            if "<table>" in body_content[i : i + 10].lower():
+                in_table = True
+                result.append("###table")
+                i += 7  # Length of <table>
+                continue
+
+            # Check for table end
+            if in_table and "</table>" in body_content[i : i + 10].lower():
+                in_table = False
+                result.append("###endtable")
+                i += 8  # Length of </table>
+                continue
+
+            # Process table rows
+            if in_table and "<tr>" in body_content[i : i + 5].lower():
+                row_cells = []
+                i += 4  # Skip <tr>
+
+                # Extract cells from this row
+                while (
+                    i < content_length
+                    and "</tr>" not in body_content[i : i + 6].lower()
+                ):
+                    if "<td>" in body_content[i : i + 5].lower():
+                        i += 4  # Skip <td>
+                        cell_content = ""
+                        while (
+                            i < content_length
+                            and "</td>" not in body_content[i : i + 6].lower()
+                        ):
+                            cell_content += body_content[i]
+                            i += 1
+                        i += 5  # Skip </td>
+                        row_cells.append(cell_content.strip())
+                    else:
+                        i += 1
+
+                # Join cells with pipe symbol
+                if row_cells:
+                    result.append(" | ".join(row_cells))
+
+                # Skip past </tr>
+                while (
+                    i < content_length
+                    and "</tr>" not in body_content[i : i + 6].lower()
+                ):
+                    i += 1
+                i += 5  # Skip </tr>
+                continue
+
+            # Process links
+            if '<a href="internal:' in body_content[i : i + 20].lower():
+                link_start = i + 16  # Position after 'internal:'
+                link_end = body_content.find('">', i)
+                if link_end != -1:
+                    link_text = body_content[link_start:link_end]
+                    result.append(f"###link {link_text}")
+                    i = body_content.find("</a>", link_end) + 4
+                    continue
+
+            # Process bold text
+            if "<span class='bold'>" in body_content[i : i + 20].lower():
+                result.append("###bold")
+                i += 19  # Length of <span class='bold'>
+                continue
+
+            if "</span>" in body_content[i : i + 10].lower() and "###bold" in result:
+                result.append("###unbold")
+                i += 7  # Length of </span>
+                continue
+
+            # Process paragraphs
+            if "<p>" in body_content[i : i + 5].lower():
+                i += 3  # Skip <p>
+                para_content = ""
+                while (
+                    i < content_length and "</p>" not in body_content[i : i + 5].lower()
+                ):
+                    para_content += body_content[i]
+                    i += 1
+                i += 4  # Skip </p>
+
+                # Reverse the &nbsp; replacement
+                para_content = para_content.replace("&nbsp;", " ")
+
+                # Unescape HTML entities
+                para_content = unescape(para_content)
+
+                result.append(para_content)
+                continue
+
+            # Move to next character if no patterns matched
+            i += 1
+
+        # Join all lines with newlines
+        return "\n".join(result)
+
+    def convert_text_to_html(self, content):
+        """Convert text with special markup to HTML"""
+        html = [
+            "<!DOCTYPE html><html><head>",
+            "<style>",
+            "body { font-family: Arial, sans-serif; margin: 20px; }",
+            "table { border-collapse: collapse; width: 100%; }",
+            "th, td { border: 4px solid #000; padding: 8px; }",
+            "th { background-color: #f2f2f2; }",
+            "a { color: blue; text-decoration: underline; cursor: pointer; }",
+            ".bold { font-weight: bold; }",
+        ]
+        if self.current_font["from_url"] and self.current_font["url"]:
+            font_url = self.current_font["url"]
+            font_name = self.current_font["name"]
+            html.append("@font-face {{")
+            html.append(f"  font-family: '{font_name}';")
+            html.append(f"  src: url('{font_url}');")
+            html.append("}}")
+        else:
+            font_name = self.current_font["name"]
+            html.append(
+                f"body {{ font-family: '{font_name}', sans-serif; margin: 20px; }}"
+            )
+        html.append("</style></head><body>")
+        lines = content.split("\n")
+        i = 0
+        in_table = False
+        table_html = []
+
+        while i < len(lines):
+            line = lines[i].strip()
+
+            # Handle special commands
+            if line.startswith("###"):
+                cmd = line[3:].strip()
+
+                if cmd.startswith("table"):
+                    in_table = True
+                    table_html = ["<table>"]
+                    # Table header can be added here if needed
+
+                elif cmd.startswith("endtable") and in_table:
+                    in_table = False
+                    table_html.append("</table>")
+                    html.append("".join(table_html))
+
+                elif cmd.startswith("link"):
+                    # Extract link target
+                    link_text = line[7:].strip()  # preserve case
+                    html.append(f'<a href="internal:{link_text}">{link_text}</a>')
+
+                elif cmd.startswith("bold"):
+                    html.append("<span class='bold'>")
+
+                elif cmd.startswith("unbold"):
+                    html.append("</span>")
+
+                # Other commands can be handled similarly
+
+            else:
+                # Regular text - handle paragraphs
+                if in_table:
+                    # Add to table if we're in a table context
+                    # This is simplified - you'd need more logic for proper tables
+                    cells = line.split("|")
+                    if len(cells) > 1:
+                        table_html.append("<tr>")
+                        for cell in cells:
+                            table_html.append(f"<td>{cell.strip()}</td>")
+                        table_html.append("</tr>")
+                else:
+                    # Regular paragraph
+                    if line:
+                        # Replace spaces with &nbsp; for preserving multiple spaces
+                        formatted_line = line.replace("  ", " &nbsp;")
+                        html.append(f"<p>{formatted_line}</p>")
+                # if not in_table and line == "":
+                #     html.append("<br>")
+            # html += "<br>"
+            i += 1
+
+        html.append("</body></html>")
+        print(html)
+        return "".join(html)
+
+    def on_link_clicked(self, event):
+        link = event.GetURL()
+        if link.startswith("data:"):
+            return
+        print(f"Link clicked: {link}")
+        if link.startswith("internal:"):
+            name = link[len("internal:") :]
+            self.net.send_message(self.net.build_message("GETSUMMARYLINK", [name]))
+            print("Sent get summary message")
+            cont = base64.b64decode(
+                self.net.get_message_params(self.net.recv_message())[0]
+            ).decode()
+            print("THE CONTENT: ", cont)
+            self.editor.SetValue(cont)
+            self.update_html_view()
+
+        # if link.startswith("internal:"):
+        #     target = link[9:]  # Remove 'internal:' prefix
+        #     wx.MessageBox(
+        #         f"Navigating to internal section: {target}",
+        #         "Link Clicked",
+        #         wx.OK | wx.ICON_INFORMATION,
+        #     )
+        #     event.Veto()  # Prevent navigation if needed
+        # else:
+        #     # Open external links in the default browser
+        #     wx.LaunchDefaultBrowser(link)
+
     def on_summarize(self, event):
-        selected = self.summary_box.GetStringSelection()
+        selected = self.editor.GetStringSelection()
         print("Currently selecting : ", selected)
         self.net.send_message(self.net.build_message("SUMMARIZE", [selected]))
         summ = self.net.get_message_params(self.net.recv_message())[0]
         print("THE SUMM: ", summ)
-        # only update the selcted
-        # self.summary_box.SetStringSelection(summ)
-        start, end = self.summary_box.GetSelection()
 
-        self.summary_box.Replace(start, end, summ)
+        # Update the selected text
+        start, end = self.editor.GetSelection()
+        self.editor.Replace(start, end, summ)
+
+        # Update HTML view
+        self.update_html_view()
 
     def show_export_menu(self, event):
-        print("Showing export menu \n\n\n\n\n\n\n")
+        print("Showing export menu")
         menu = wx.Menu()
         for label, handler in [
             ("Markdown", self.export_as_markdown),
@@ -182,11 +464,11 @@ class MainFrame(wx.Frame):
         self.PopupMenu(menu)
 
     def show_import_menu(self, event):
-        print("Showing import menu\n\n\n\n\n\n")
+        print("Showing import menu")
         menu = wx.Menu()
         for label, handler in [
             ("Markdown", self.import_from_markdown),
-            ("PDF", self.import_from_pdf),
+            # ("PDF", self.import_from_pdf),
             ("HTML", self.import_from_html),
             ("TXT", self.import_from_txt),
             ("Scan A File", self.import_from_file),
@@ -207,13 +489,13 @@ class MainFrame(wx.Frame):
             return
         path = dialog.GetPath()
         self.net.send_file(path)
-        # self.net.recv_handle()
         self.net.send_message(
             self.net.build_message("GETFILECONTENT", [os.path.basename(path)])
         )
         content = self.net.get_message_params(self.net.recv_message())
-        print("THE CONTENT: ", content)
-        self.summary_box.AppendText(content[0])
+        # print("THE CONTENT: ", content)
+        self.editor.AppendText(content[0])
+        self.update_html_view()
 
     def on_view_events(self, event):
         self.net.send_message(self.net.build_message("GETEVENTS", []))
@@ -237,8 +519,6 @@ class MainFrame(wx.Frame):
         events_dialog = EventsDialog(events, self, self.net)
         events_dialog.ShowModal()
         events_dialog.Destroy()
-
-    #
 
     def on_add_event(self, event):
         dialog = wx.Dialog(self, title="Add New Event", size=(400, 300))
@@ -330,13 +610,14 @@ class MainFrame(wx.Frame):
 
     def export_as_html(self, event):
         print("Exporting as HTML")
-        self.export_file("html")
+        # For HTML, we could directly use our HTML content
+        self.export_file("html", use_html=True)
 
     def export_as_txt(self, event):
         print("Exporting as TXT")
         self.export_file("txt")
 
-    def export_file(self, ext):
+    def export_file(self, ext, use_html=False):
         dialog = wx.FileDialog(
             self,
             message="Save file as ...",
@@ -349,29 +630,92 @@ class MainFrame(wx.Frame):
             return
         path = dialog.GetPath()
         dialog.Destroy()
-        self.net.send_message(
-            self.net.build_message("EXPORT", [self.summary_box.GetValue(), ext])
-        )
-        inner_content = self.net.get_message_params(self.net.recv_message())[0]
 
-        with open(path, "wb") as f:
-            f.write(base64.b64decode(inner_content))
+        # # For HTML export, we can use our already formatted HTML content
+        # content = (
+        #     self.html_content if use_html and ext == "html" else self.editor.GetValue()
+        # )
+        #
+        # self.net.send_message(self.net.build_message("EXPORT", [content, ext]))
+        # inner_content = self.net.get_message_params(self.net.recv_message())[0]
+        if ext.lower() == "pdf":
+            # gross ill rewrite with all the rest
+
+            return pdfkit.from_string(self.html_content, path)
+        formated_content = self.format_content(self.editor.GetValue(), ext)
+        print("Writing: ", formated_content)
+        with open(path, "w") as f:
+            f.write(formated_content)
+        # with open(path, "wb") as f:
+        #     f.write(base64.b64decode(inner_content))
         wx.MessageBox(
             f"Summary saved to {path}", "Export Successful", wx.OK | wx.ICON_INFORMATION
         )
 
+    def format_content(self, content, ext):
+        if ext.lower() == "html":
+            print("HTML")
+            print(self.html_content)
+            return self.html_content
+        # elif ext == "md" or ext == "txt":
+        #     return content
+        elif ext.lower() == "pdf":
+            return self.html_content
+        return content
+
     def import_from_markdown(self, event):
         print("Importing from Markdown")
+        file_text_content = self.get_file_content("md")
+        if not file_text_content:
+            return
+        self.editor.SetValue(file_text_content)
+        self.update_html_view()
 
     def import_from_pdf(self, event):
         print("Importing from PDF")
+        # Implementation would go here
 
     def import_from_html(self, event):
         print("Importing from HTML")
+        # Implementation would go here
+        file_text_content = self.get_file_content("html")
+        if not file_text_content:
+            return
+        # preform the reverse of convert_text_to_html
+        self.editor.SetValue(self.html_to_text(file_text_content))
+        self.update_html_view()
+        return
 
     def import_from_txt(self, event):
         print("Importing from TXT")
+        # Implementation would go here
+        file_text_content = self.get_file_content("txt")
+        if not file_text_content:
+            return
+        self.editor.SetValue(file_text_content)
+        self.update_html_view()
 
+    def get_file_content(self, ext):
+        # Open a file dialog to select a File
+        # return its text content for txt and md
+        # returns its html for pdf and html
+        dialog = wx.FileDialog(
+            self,
+            message="Choose a file to import",
+            style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST,
+        )
+        if dialog.ShowModal() == wx.ID_CANCEL:
+            return
+        path = dialog.GetPath()
+        if path.endswith(".pdf"):
+            return self.get_pdf_content(path)
+        dialog.Destroy()
+        with open(path, "r") as f:
+            return f.read()
+
+    # def get_pdf_content(self, path):
+    #     # convert pdf to html using pdfkit
+    #     return pdfkit.
     def on_browse_data(self, event):
         wx.MessageBox(
             f"Browsing data for user: {self.username}",
@@ -415,14 +759,28 @@ class MainFrame(wx.Frame):
 
         dialog.Destroy()
 
+        # Build and send the save message with font information
+        font_info = {
+            "name": self.current_font["name"],
+            "url": self.current_font["url"] if self.current_font["from_url"] else "",
+        }
+
+        # Convert font info to string
+        font_info_str = f"{font_info['name']}|{font_info['url']}"
+
         # Build and send the save message
         self.net.send_message(
-            self.net.build_message("SAVE", [title, self.summary_box.GetValue()])
+            self.net.build_message(
+                "SAVE", [title, self.editor.GetValue(), font_info_str]
+            )
         )
         msg = self.net.recv_message()
         code, params = self.net.get_message_code(msg), self.net.get_message_params(msg)
         print("CODE RESPONSE :", code)
         print("PARAMS RESPONSE: ", params)
+
+
+# Keep the other classes (EventsDialog, SummaryCarousel) unchanged
 
 
 class EventsDialog(wx.Dialog):
@@ -519,3 +877,262 @@ class EventsDialog(wx.Dialog):
 
     def on_close(self, event):
         self.Close()
+        exit()
+
+
+class SummaryCarousel(wx.Dialog):
+    def __init__(self, summaries, net, parent):
+        super().__init__(None, title="Summaries Carousel", size=(600, 400))
+        self.summaries = summaries
+        self.parent = parent
+        # Main layout
+        panel = wx.Panel(self)
+        vbox = wx.BoxSizer(wx.VERTICAL)
+
+        # Listbox to display summaries
+        self.summary_list = wx.ListBox(panel, style=wx.LB_SINGLE)
+        for summ in self.summaries:
+            display_text = f"{summ.shareLink} - By User {summ.ownerId} - Created on {summ.createTime.strftime('%Y-%m-%d %H:%M:%S')}"
+            self.summary_list.Append(display_text)
+
+        vbox.Add(self.summary_list, proportion=1, flag=wx.EXPAND | wx.ALL, border=10)
+
+        # Buttons
+        hbox = wx.BoxSizer(wx.HORIZONTAL)
+        open_button = wx.Button(panel, label="Open")
+        close_button = wx.Button(panel, label="Close")
+        hbox.Add(open_button, flag=wx.ALL, border=5)
+        hbox.Add(close_button, flag=wx.ALL, border=5)
+
+        vbox.Add(hbox, flag=wx.ALIGN_CENTER | wx.ALL, border=10)
+        panel.SetSizer(vbox)
+
+        # Bind events
+        open_button.Bind(wx.EVT_BUTTON, self.on_open_summary)
+        close_button.Bind(wx.EVT_BUTTON, self.on_close)
+        self.net = net
+
+    def on_open_summary(self, event):
+        selection = self.summary_list.GetSelection()
+        if selection == wx.NOT_FOUND:
+            wx.MessageBox(
+                "Please select a summary to open.",
+                "No Selection",
+                wx.OK | wx.ICON_WARNING,
+            )
+            return
+
+        selected_summary = self.summaries[selection]
+        print(selected_summary)
+        wx.MessageBox(
+            f"Opening summary:\n\n"
+            f"Name: {selected_summary.shareLink}\n"
+            f"Path: {selected_summary.path_to_summary}",
+            "Open Summary",
+            wx.OK | wx.ICON_INFORMATION,
+        )
+        self.net.send_message(
+            self.net.build_message("GETSUMMARY", [str(selected_summary.id)])
+        )
+        print("Sent get summary message")
+        try:
+            dic: Dict = pickle.loads(
+                base64.b64decode(
+                    self.net.get_message_params(self.net.recv_message())[0]
+                )
+            )
+            cont = dic["data"].decode()
+            dicty = {"font": dic["summ"].font}
+            print(dic)
+            self.parent.editor.SetValue(cont)
+            dicty["font"] = dicty.get("font", "Arial")
+            if dicty["font"].startswith("http"):
+                self.parent.current_font = {
+                    "name": dicty["font"],
+                    "url": dicty["font"],
+                    "from_url": True,
+                }
+            else:
+                self.parent.current_font = {
+                    "name": dicty["font"],
+                    "url": None,
+                    "from_url": False,
+                }
+            print(self.parent.current_font)
+            self.Close()
+        except Exception as e:
+            print("Error: ", e)
+            wx.MessageBox(
+                "Error: Could not retrieve summary content.",
+                "Error",
+                wx.OK | wx.ICON_ERROR,
+            )
+            self.Close()
+            return
+
+    def on_close(self, event):
+        self.Close()
+
+
+class FontSelectorDialog(wx.Dialog):
+    def __init__(self, parent, net):
+        super().__init__(parent, title="Font Selector", size=(600, 500))
+        self.parent = parent
+        self.net = net
+        self.custom_font_path = None
+        self.selected_font = None
+        self.from_url = False
+
+        panel = wx.Panel(self)
+        main_sizer = wx.BoxSizer(wx.VERTICAL)
+
+        # System fonts section
+        system_fonts_label = wx.StaticText(panel, label="System Fonts")
+        main_sizer.Add(system_fonts_label, flag=wx.ALL, border=5)
+
+        # Get all system fonts
+        font_enumerator = wx.FontEnumerator()
+        font_enumerator.EnumerateFacenames()
+        system_fonts = sorted(font_enumerator.GetFacenames())
+
+        # Create list for system fonts
+        self.system_fonts_list = wx.ListBox(panel, size=(-1, 200), choices=system_fonts)
+        main_sizer.Add(
+            self.system_fonts_list, proportion=1, flag=wx.EXPAND | wx.ALL, border=5
+        )
+
+        # Font preview
+        preview_label = wx.StaticText(panel, label="Preview:")
+        main_sizer.Add(preview_label, flag=wx.ALL, border=5)
+
+        self.preview_text = wx.TextCtrl(
+            panel,
+            value="The quick brown fox jumps over the lazy dog",
+            style=wx.TE_MULTILINE | wx.TE_READONLY,
+        )
+        self.preview_text.SetMinSize((580, 60))
+        main_sizer.Add(self.preview_text, flag=wx.EXPAND | wx.ALL, border=5)
+
+        # URL input for custom fonts
+        url_label = wx.StaticText(panel, label="Or download font from URL:")
+        main_sizer.Add(url_label, flag=wx.ALL, border=5)
+
+        self.url_input = wx.TextCtrl(panel)
+        main_sizer.Add(self.url_input, flag=wx.EXPAND | wx.ALL, border=5)
+
+        # Download button
+        download_button = wx.Button(panel, label="Download & Preview")
+        main_sizer.Add(download_button, flag=wx.ALL, border=5)
+
+        # Buttons
+        button_sizer = wx.StdDialogButtonSizer()
+        self.ok_button = wx.Button(panel, wx.ID_OK)
+        self.ok_button.SetDefault()
+        # Initially disabled until a font is selected
+        self.ok_button.Enable(False)
+        cancel_button = wx.Button(panel, wx.ID_CANCEL)
+
+        button_sizer.AddButton(self.ok_button)
+        button_sizer.AddButton(cancel_button)
+        button_sizer.Realize()
+
+        main_sizer.Add(button_sizer, flag=wx.ALIGN_CENTER | wx.ALL, border=10)
+
+        panel.SetSizer(main_sizer)
+
+        # Bind events
+        self.system_fonts_list.Bind(wx.EVT_LISTBOX, self.on_font_selected)
+        download_button.Bind(wx.EVT_BUTTON, self.on_download_font)
+
+    def on_font_selected(self, event):
+        font_name = self.system_fonts_list.GetStringSelection()
+        if font_name:
+            self.selected_font = font_name
+            self.from_url = False
+            self.ok_button.Enable(True)
+
+            # Update preview
+            font = wx.Font(
+                12,
+                wx.FONTFAMILY_DEFAULT,
+                wx.FONTSTYLE_NORMAL,
+                wx.FONTWEIGHT_NORMAL,
+                False,
+                font_name,
+            )
+            self.preview_text.SetFont(font)
+
+    def on_download_font(self, event):
+        url = self.url_input.GetValue().strip()
+        if not url:
+            wx.MessageBox("Please enter a URL", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        # Check if URL is valid and points to a font file
+        if not (url.lower().endswith(".ttf") or url.lower().endswith(".otf")):
+            wx.MessageBox(
+                "URL must point to a .ttf or .otf font file",
+                "Error",
+                wx.OK | wx.ICON_ERROR,
+            )
+            return
+
+        try:
+            # Create a progress dialog
+            progress_dialog = wx.ProgressDialog(
+                "Downloading Font",
+                "Downloading font file...",
+                maximum=100,
+                parent=self,
+                style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE,
+            )
+
+            # Download the file to a temporary location
+            temp_dir = tempfile.gettempdir()
+            font_filename = os.path.basename(url)
+            self.custom_font_path = os.path.join(temp_dir, font_filename)
+
+            def reporthook(blocknum, blocksize, totalsize):
+                if totalsize > 0:
+                    percent = min(int(blocknum * blocksize * 100 / totalsize), 100)
+                    progress_dialog.Update(percent)
+
+            urllib.request.urlretrieve(url, self.custom_font_path, reporthook)
+            progress_dialog.Destroy()
+
+            # Try to load the font
+            if wx.Font.AddPrivateFont(self.custom_font_path):
+                # Extract font name
+                # This is a simplified approach - in a real app, you might need a more robust way to get the font name
+                font_name = os.path.splitext(font_filename)[0]
+                self.selected_font = font_name
+                self.from_url = True
+
+                # Update preview with the new font
+                font = wx.Font(
+                    12,
+                    wx.FONTFAMILY_DEFAULT,
+                    wx.FONTSTYLE_NORMAL,
+                    wx.FONTWEIGHT_NORMAL,
+                    False,
+                    font_name,
+                )
+                self.preview_text.SetFont(font)
+
+                self.ok_button.Enable(True)
+                wx.MessageBox(
+                    f"Font '{font_name}' downloaded successfully",
+                    "Success",
+                    wx.OK | wx.ICON_INFORMATION,
+                )
+            else:
+                wx.MessageBox(
+                    "Failed to load the downloaded font", "Error", wx.OK | wx.ICON_ERROR
+                )
+                self.custom_font_path = None
+
+        except Exception as e:
+            wx.MessageBox(
+                f"Error downloading font: {str(e)}", "Error", wx.OK | wx.ICON_ERROR
+            )
+            self.custom_font_path = None

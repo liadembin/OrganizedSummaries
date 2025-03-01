@@ -1,0 +1,23 @@
+each special refrence starts with a prefix: ### 
+supported special refrences:
+    ###table: 
+        - table name
+    ###column:
+        - comes after table 
+        - column name
+    ###row:
+        - comes after column
+        - row number
+    ###cell:
+        - comes after row
+        - cell value 
+    ###endrow:
+        - comes after cells
+    ###endtable:
+    ###link:
+        - link value to diffrent summary. 
+        - onclick browses to the summary
+    ###img 
+        -maybe added later 
+    ### bold
+    ### unbold
