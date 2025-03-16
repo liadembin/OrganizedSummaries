@@ -778,19 +778,21 @@ def main():
     load_dotenv()  # Load environment variables from .env file
     try:
         db = DbManager()
-        db.connect_to_db({
-            "host": "localhost",
-            "user": "root",
-            "password": (
-                os.getenv("DB_PASSWORD")
-                if os.getenv("DB_PASSWORD")
-                else "liad8888"
-                if os.getenv("DB_PASSWORD")
-                else "liad8888"
-            ),
-            "database": "finalprojtest",
-            "port": 3306,
-        })
+        db.connect_to_db(
+            {
+                "host": "localhost",
+                "user": "root",
+                "password": (
+                    os.getenv("DB_PASSWORD")
+                    if os.getenv("DB_PASSWORD")
+                    else "liad8888"
+                    if os.getenv("DB_PASSWORD")
+                    else "liad8888"
+                ),
+                "database": "finalprojtest",
+                "port": 3306,
+            }
+        )
         # Demonstrate user operations
         user_id = demo_user_operations(db)
         print("Uid: ", user_id)

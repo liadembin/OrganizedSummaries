@@ -159,6 +159,7 @@ class MainFrame(wx.Frame):
                 # self.upload_font_to_server(font_path, font_name, font_url)
                 print("Uploading font to server")
             # Update the HTML view with the new font
+            # self.send_update()
             self.update_html_view()
 
         dialog.Destroy()
@@ -183,6 +184,7 @@ class MainFrame(wx.Frame):
         if line.startswith("###"):
             print("Found special line: ", line)
             print("Thats the speciak!!!!!!!!!!!")
+
         self.update_html_view()
 
     def on_refresh_html(self, event):
@@ -778,9 +780,6 @@ class MainFrame(wx.Frame):
         code, params = self.net.get_message_code(msg), self.net.get_message_params(msg)
         print("CODE RESPONSE :", code)
         print("PARAMS RESPONSE: ", params)
-
-
-# Keep the other classes (EventsDialog, SummaryCarousel) unchanged
 
 
 class EventsDialog(wx.Dialog):
