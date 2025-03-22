@@ -13,11 +13,23 @@ import urllib.request
 import wx.html2
 import wx.adv
 import pdfkit
+import time
+import json
+import difflib
+import threading
 
 
 class MainFrame(wx.Frame):
     def __init__(self, net: NetworkManager, username):
         super().__init__(None, title="App Dashboard", size=(800, 600))
+        self.sock_lock = threading.Lock()
+        self.listening_thread = threading.Thread(
+            target=self.listen_for_changes, args=(self,), daemon=True
+        )
+        # self.made_changes = []
+        # Set up a timer to check for document changes
+        self.update_timer = wx.Timer(self)
+        self.Bind(wx.EVT_TIMER, self.update_doc, self.update_timer)
         self.net = net
         self.username = username
         self.html_content = ""  # To store HTML content
@@ -89,7 +101,7 @@ class MainFrame(wx.Frame):
 
         # Bottom controls (Export, Import, Summarize)
         hbox_bottom = wx.BoxSizer(wx.HORIZONTAL)
-
+        share_button.Bind(wx.EVT_BUTTON, self.share_summary)
         # Export button with dropdown
         export_button = wx.Button(panel, label="Export")
         export_button.Bind(wx.EVT_BUTTON, self.show_export_menu)
@@ -126,7 +138,183 @@ class MainFrame(wx.Frame):
         )
         self.editor.SetFont(font)
         # Initialize HTML view
+        self.prev_content = ""
         self.update_html_view()
+
+    def listen_for_changes(self):
+        # pass
+        self.handlers = {
+            "ERROR": "",
+            "LOGIN_FAIL": "",
+            "LOGIN_SUCCESS": "",
+            "REGISTER_FAIL": "",
+            "REGISTER_SUCCESS": "",
+            "TAKESUMMARIES": "",
+            "SAVE_SUCCESS": "",
+            "EVENT_SUCCESS": "",
+            "FILECONTENT": "",
+            "SUMMARY": "",
+            "EXPORTED": "",
+            "TAKEEVENTS": "",
+            "DELETE_SUCCESS": "",
+            "INFO": "",
+            "SHARE_SUCCESS": "",
+            "TAKEUPDATE": "",
+        }
+        # self.net.add_handlers(self.handlers)
+        self.net.sock.settimeout(0.5)
+        import socket
+
+        while True:
+            with self.sock_lock:
+                try:
+                    self.net.recv_handle()
+                # time.sleep(0.2)
+                except socket.timeout:
+                    pass
+                except Exception as e:
+                    print("Error in listening thread")
+                    raise e
+
+    def share_summary(self, event):
+        print("Sharing summary")
+        dialog = wx.TextEntryDialog(
+            None, "Enter the username to share with:", "Share Summary"
+        )
+        if dialog.ShowModal() == wx.ID_OK:
+            username = dialog.GetValue()
+            print("Sharing with: ", username)
+            self.net.send_message(self.net.build_message("SHARESUMMARY", [username]))
+            msg = self.net.recv_message()
+            code, params = (
+                self.net.get_message_code(msg),
+                self.net.get_message_params(msg),
+            )
+            print("CODE RESPONSE :", code)
+            print("PARAMS RESPONSE: ", params)
+            if code.strip() == "ERROR":
+                wx.MessageBox(f"Error: {params[0]}", "Error", wx.OK | wx.ICON_ERROR)
+                return
+
+        else:
+            print("Share canceled by user.")
+            dialog.Destroy()
+            return
+
+    def show_upcoming_events(self, events):
+        # Ensure all event dates are datetime.date
+        for event in events:
+            if isinstance(event["event_date"], datetime.datetime):
+                # Convert datetime to date
+                event["event_date"] = event["event_date"].date()
+
+        # Sort events by proximity to current date
+        sorted_events = sorted(
+            events, key=lambda x: abs((x["event_date"] - datetime.date.today()).days)
+        )
+
+        # Create dialog
+        dialog = wx.Dialog(self, title="Upcoming Events", size=(500, 400))
+        panel = wx.Panel(dialog)
+
+        vbox = wx.BoxSizer(wx.VERTICAL)
+
+        # Events list
+        events_list = wx.ListCtrl(panel, style=wx.LC_REPORT | wx.BORDER_SUNKEN)
+        events_list.InsertColumn(0, "Title", width=200)
+        events_list.InsertColumn(1, "Date", width=150)
+        events_list.InsertColumn(2, "Days Away", width=120)
+
+        for event in sorted_events:
+            event_date = event["event_date"]  # Already converted to date
+            days_away = (event_date - datetime.date.today()).days
+
+            # Formatting label
+            if days_away < 0:
+                days_label = f"Happened {-days_away} days ago"
+                color = wx.Colour(255, 0, 0)  # Red for past events
+            elif days_away == 0:
+                days_label = "Today"
+                color = wx.Colour(0, 0, 255)  # Blue for today
+            else:
+                days_label = f"In {days_away} days"
+                color = wx.Colour(0, 128, 0)  # Green for future events
+
+            index = events_list.InsertItem(0, event["event_title"])
+            events_list.SetItem(
+                index, 1, event_date.strftime("%Y-%m-%d")
+            )  # Convert date to string
+            events_list.SetItem(index, 2, days_label)
+
+            # Set text color
+            for col in range(3):
+                events_list.SetItemTextColour(index, color)
+
+        vbox.Add(events_list, proportion=1, flag=wx.EXPAND | wx.ALL, border=10)
+
+        # Continue button
+        continue_button = wx.Button(panel, label="Continue")
+        continue_button.Bind(wx.EVT_BUTTON, lambda event: dialog.EndModal(wx.ID_OK))
+        vbox.Add(continue_button, flag=wx.ALIGN_CENTER | wx.ALL, border=10)
+
+        panel.SetSizer(vbox)
+
+        dialog.ShowModal()
+
+    def update_doc(self, event):
+        print("Should update")
+        old_text = self.prev_content
+        print("Old text:", old_text)
+        new_text = self.editor.GetValue()
+        changes = []
+
+        # Use SequenceMatcher instead of ndiff
+        matcher = difflib.SequenceMatcher(None, old_text, new_text)
+
+        # Get opcodes (tag, i1, i2, j1, j2) where tag is one of:
+        # 'replace', 'delete', 'insert', 'equal'
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == "equal":
+                continue
+
+            # Map difflib operations to your change types
+            if tag == "replace":
+                change_type = "UPDATE"
+                content = new_text[j1:j2]
+            elif tag == "delete":
+                change_type = "DELETE"
+                content = ""
+            elif tag == "insert":
+                change_type = "INSERT"
+                content = new_text[j1:j2]
+
+            changes.append({"cord": [i1, i2], "type": change_type, "cont": content})
+        payload = json.dumps({"changes": changes})
+        print("Payload: ", payload)
+        self.net.send_message(self.net.build_message("UPDATEDOC", [payload]))
+        self.prev_content = new_text
+        # recv other made changes and apply them
+        # self.net.sock.settimeout(0.1)
+        try:
+            msg = self.net.recv_message()
+            code, params = (
+                self.net.get_message_code(msg),
+                self.net.get_message_params(msg),
+            )
+            print("Recived code; ", code)
+            if code.strip() == "ERROR":
+                wx.MessageBox(f"Error: {params[0]}", "Error", wx.OK | wx.ICON_ERROR)
+                return
+            if code.strip() == "INFO":
+                print("Recived info: ", params)
+                return
+            print("THE PARAMS: ", params)
+            self.editor.SetValue(params[0])
+            self.prev_content = params[0]
+            self.update_html_view()
+        except Exception as e:
+            print("No new changes")
+            raise e
 
     def on_font_selector(self, event):
         dialog = FontSelectorDialog(self, self.net)
@@ -165,11 +353,15 @@ class MainFrame(wx.Frame):
         dialog.Destroy()
 
     def on_text_input(self, event):
-        # Check for special commands that might need to be processed immediately
-        text_pos = self.editor.GetInsertionPoint() - 1
+        # Store current position and content
+        current_pos = self.editor.GetInsertionPoint()
+        current_content = self.editor.GetValue()
+        # Continue with existing functionality
+
+        text_pos = current_pos - 1
         if text_pos < 2:
             return self.update_html_view()
-        cont = self.editor.GetValue()
+        cont = current_content
 
         # Adjust for newlines
         text_pos -= 1 * cont.count("\n", 0, text_pos)
@@ -183,8 +375,7 @@ class MainFrame(wx.Frame):
 
         if line.startswith("###"):
             print("Found special line: ", line)
-            print("Thats the speciak!!!!!!!!!!!")
-
+            print("That's the special!!!!!!!!!!!")
         self.update_html_view()
 
     def on_refresh_html(self, event):
@@ -195,6 +386,7 @@ class MainFrame(wx.Frame):
         content = self.editor.GetValue()
         html = self.convert_text_to_html(content)
         self.html_content = html
+        # self.html_window.RunScript(f"document.innerHTML = '{html}'")
         self.html_window.SetPage(html, "about:blank")
 
     def html_to_text(self, content):
@@ -406,7 +598,7 @@ class MainFrame(wx.Frame):
             i += 1
 
         html.append("</body></html>")
-        print(html)
+        # print(html)
         return "".join(html)
 
     def on_link_clicked(self, event):
@@ -423,6 +615,7 @@ class MainFrame(wx.Frame):
             ).decode()
             print("THE CONTENT: ", cont)
             self.editor.SetValue(cont)
+            self.prev_content = cont
             self.update_html_view()
 
         # if link.startswith("internal:"):
@@ -944,6 +1137,8 @@ class SummaryCarousel(wx.Dialog):
             dicty = {"font": dic["summ"].font}
             print(dic)
             self.parent.editor.SetValue(cont)
+            self.parent.prev_content = cont
+            print("updated old text to: ", self.parent.prev_content)
             dicty["font"] = dicty.get("font", "Arial")
             if dicty["font"].startswith("http"):
                 self.parent.current_font = {
@@ -958,6 +1153,7 @@ class SummaryCarousel(wx.Dialog):
                     "from_url": False,
                 }
             print(self.parent.current_font)
+            self.parent.update_timer.Start(1000)  # Check every 500ms
             self.Close()
         except Exception as e:
             print("Error: ", e)

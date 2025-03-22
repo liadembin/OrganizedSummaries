@@ -11,7 +11,7 @@ from wx import adv
 def handle_key_exchange(sock: socket.socket):
     # recv rsa
     # send aes
-    net = networkManager.NetworkManager(sock, cryptManager.CryptManager(), {})
+    net = networkManager.NetworkManager(sock, cryptManager.CryptManager(rsa_key=2), {})
     net.crypt_manager.generate_aes_key()
     rsa_pub_msg = net.recv_message_plain().decode()
     rsa_pub_key = base64.b64decode(net.get_message_params(rsa_pub_msg)[0])

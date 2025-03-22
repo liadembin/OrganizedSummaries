@@ -61,49 +61,6 @@ class LoginFrame(wx.Frame):
         # Set the main layout
         panel.SetSizer(vbox)
 
-    def show_upcoming_events(self, events):
-        # Sort events by proximity to current date
-        sorted_events = sorted(
-            events,
-            key=lambda x: abs(
-                (
-                    datetime.strptime(x["event_date"], "%Y-%m-%d").date()
-                    - datetime.now().date()
-                ).days
-            ),
-        )
-
-        # Create dialog
-        dialog = wx.Dialog(self, title="Upcoming Events", size=(500, 400))
-        panel = wx.Panel(dialog)
-
-        vbox = wx.BoxSizer(wx.VERTICAL)
-
-        # Events list
-        events_list = wx.ListCtrl(panel, style=wx.LC_REPORT | wx.BORDER_SUNKEN)
-        events_list.InsertColumn(0, "Title", width=200)
-        events_list.InsertColumn(1, "Date", width=150)
-        events_list.InsertColumn(2, "Days Away", width=100)
-
-        for event in sorted_events:
-            event_date = datetime.strptime(event["event_date"], "%Y-%m-%d").date()
-            days_away = (event_date - datetime.now().date()).days
-
-            index = events_list.InsertItem(0, event["event_title"])
-            events_list.SetItem(index, 1, event["event_date"])
-            events_list.SetItem(index, 2, str(days_away))
-
-        vbox.Add(events_list, proportion=1, flag=wx.EXPAND | wx.ALL, border=10)
-
-        # Continue button
-        continue_button = wx.Button(panel, label="Continue")
-        continue_button.Bind(wx.EVT_BUTTON, lambda event: dialog.EndModal(wx.ID_OK))
-        vbox.Add(continue_button, flag=wx.ALIGN_CENTER | wx.ALL, border=10)
-
-        panel.SetSizer(vbox)
-
-        return dialog.ShowModal()
-
     def on_login(self, event):
         username = self.username_input.GetValue()
         password = self.password_input.GetValue()

@@ -57,11 +57,12 @@ class NetworkManager:
 
     def send_message_plain(self, message: str) -> None:
         """
+
         Send a message over the socket connection.
 
         :param message: The message string to send.
         """
-        print(f"SEND>>>{message}")
+        print(f"SEND>>>{message[: min(50, len(message))]}")
         self.sock.send(message.encode())
 
     def has_received(self) -> bool:
@@ -136,7 +137,7 @@ class NetworkManager:
         # message = self.sock.recv(10).decode()
         message = self.recv_message_plain()
         payload, iv = self.get_message_params(message.decode())
-        print(f"DECODING WITH: {iv} \n {self.crypt_manager.aes_key}")
+        #  print(f"DECODING WITH: {iv} \n {self.crypt_manager.aes_key}")
         msg = self.crypt_manager.decrypt_data(
             base64.b64decode(payload), base64.b64decode(iv)
         ).decode()
@@ -161,13 +162,13 @@ class NetworkManager:
         :param message: The message string to send.
         """
         print(f"SEND>>>{message}")
-        print("ENCRYPTING WITH: ", self.crypt_manager.aes_key)
+        #  print("ENCRYPTING WITH: ", self.crypt_manager.aes_key)
         arr = [
             base64.b64encode(d).decode()
             for d in self.crypt_manager.encrypt_data(message.encode())
         ]
 
-        print("IV: ", arr[1])
+        # print("IV: ", arr[1])
         self.sock.send(self.build_message("ENCODED", arr, do_size=True).encode())
 
 

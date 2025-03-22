@@ -7,3 +7,5 @@ tessarct
 *.pem
 data/**
 data
+*.html
+*.pdf 

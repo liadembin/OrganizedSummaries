@@ -1,4 +1,4 @@
-from dbManager import Summary
+from dbManager import Summary, DbManager
 from OCRManager import ExtractText
 import datetime
 import json
@@ -13,11 +13,18 @@ import sys
 import time
 from threading import Thread
 import base64
-from dbManager import DbManager
+
+# from dbManager import DbManager
 import pickle
+import threading
+from typing import Dict
 
 PEPPER = b"PEPPER"
 id_per_sock = {}
+ids_per_summary_id = {}
+net_per_sock = {}
+lock_per_sock: Dict[socket.socket, threading.Lock] = {}
+doc_changes_lock = threading.Lock()
 
 
 def handle_key_exchange(
@@ -49,7 +56,7 @@ def handle_login(db_manager: DbManager) -> Callable:
         loged = db_manager.authenticate_user(username, password)
         if loged:
             id_per_sock[net.sock] = loged.id
-        events = db_manager.get_events(loged.id)
+        events = db_manager.get_events(loged.id) if loged else []
         print("Eve: ", events)
         net.send_message(
             net.build_message(
@@ -97,7 +104,9 @@ def handle_summaries(db_manager) -> Callable:
             print("NOT logged in")
             net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
             return True
-        summaries = db_manager.get_all_by_user(db_manager.get_id_per_sock(net.sock))
+        summaries = db_manager.get_all_user_can_access(
+            db_manager.get_id_per_sock(net.sock)
+        )
         net.send_message(
             net.build_message(
                 "TAKESUMMARIES",
@@ -334,6 +343,18 @@ def handle_get_summary(db_manager) -> Callable:
                 [base64.b64encode(pickle.dumps({"data": data, "summ": summ})).decode()],
             )
         )
+
+        # scan if id exists, then remove
+        for key, value in ids_per_summary_id.items():
+            if id in value:
+                value.remove(id)
+                break
+        if summ.id not in ids_per_summary_id:
+            ids_per_summary_id[summ.id] = [id]
+            spawn_summary_thread(summ, id, net, summ.id)
+        else:
+            ids_per_summary_id[summ.id].append(id)
+
         return False
 
     return handle_inner
@@ -359,6 +380,15 @@ def handle_get_summary_by_link(db_manager) -> Callable:
         net.send_message(
             net.build_message("TAKESUMMARY", [base64.b64encode(data).decode()])
         )
+        for key, value in ids_per_summary_id.items():
+            if id in value:
+                value.remove(id)
+                break
+        if id not in ids_per_summary_id:
+            ids_per_summary_id[summ.id] = []
+            spawn_summary_thread(summ, id, net, summ.id)
+        ids_per_summary_id[summ.id].append(id)
+
         return False
 
     return handle_inner
@@ -381,6 +411,95 @@ def handle_get_events(db_manager) -> Callable:
                 [base64.b64encode(pickle.dumps(event)).decode() for event in events],
             )
         )
+        return False
+
+    return handle_inner
+
+
+# def handle_get_document_changes(db_manager) -> Callable:
+#     def handle_inner(document_id, net: networkManager.NetworkManager) -> bool:
+#         id = db_manager.get_id_per_sock(net.sock)
+#         if id == -1:
+#             print("NOT logged in")
+#             net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
+#             return True
+#         changes = [
+#             {"username": "u1", "position": 1, "content": "hello", "type": "insert"}
+#         ]
+#         # db_manager.get_document_changes(document_id)
+#         net.send_message(
+#             net.build_message(
+#                 "TAKEDOCUMENTCHANGES",
+#                 [json.dumps({"changes": changes})],
+#             )
+#         )
+#         return False
+#
+#     return handle_inner
+#
+
+doc_changes = {}
+
+
+def handle_update_document(db_manager) -> Callable:
+    def handle_inner(changes, net: networkManager.NetworkManager) -> bool:
+        global doc_changes
+        global documents
+        id = db_manager.get_id_per_sock(net.sock)
+        if id == -1:
+            print("NOT logged in")
+            net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
+            return True
+        # save into the dict
+        # let the thread handle
+        document_id = -1
+        for k, v in ids_per_summary_id.items():
+            if id in v:
+                document_id = k
+                break
+        if document_id == -1:
+            # net.send_message(net.build_message("ERROR", ["NO DOCUMENT OPENED"]))
+            print("User hasnt oppened a document")
+            net.send_message(net.build_message("INFO", ["NO DOCUMENT OPENED"]))
+            return False
+        print("Appending to Doc changes: ", doc_changes)
+        with doc_changes_lock:
+            if document_id not in doc_changes:
+                doc_changes[document_id] = {}
+            if id not in doc_changes[document_id]:
+                doc_changes[document_id][id] = []
+            if changes:
+                doc_changes[document_id][id].append(changes)
+        # print("Appended to Doc changes: ", doc_changes)
+        return False
+
+    return handle_inner
+
+
+def handle_share_summary(db_manager: DbManager) -> Callable:
+    def handle_inner(username, net: networkManager.NetworkManager) -> bool:
+        id = db_manager.get_id_per_sock(net.sock)
+        if id == -1:
+            print("NOT logged in")
+            net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
+            return True
+        summary_id = -1
+        for k, v in ids_per_summary_id.items():
+            if id in v:
+                summary_id = k
+                break
+        if summary_id == -1:
+            net.send_message(net.build_message("ERROR", ["NO SUMMARY OPENED"]))
+            return True
+        user_id = db_manager.get_id_by_username(username)
+        if user_id == -1:
+            net.send_message(net.build_message("ERROR", ["USER NOT FOUND"]))
+            return True
+        succsess = db_manager.share_summary(summary_id, id, user_id, "edit")
+        if not succsess:
+            net.send_message(net.build_message("ERROR", ["FAILED TO SHARE"]))
+            return True
+        net.send_message(net.build_message("SHARE_SUCCESS", []))
         return False
 
     return handle_inner
@@ -420,20 +539,181 @@ def thread_main(sock, addr, crypt):
     net.add_handler("GETEVENTS", handle_get_events(db_manager))
     net.add_handler("DELETEEVENT", handle_delete_event(db_manager))
     net.add_handler("GETSUMMARYLINK", handle_get_summary_by_link(db_manager))
+    # net.add_handler("GET_DOCUMENT_CHANGES", handle_get_document_changes(db_manager))
+    net.add_handler("UPDATEDOC", handle_update_document(db_manager))
+    net.add_handler("SHARESUMMARY", handle_share_summary(db_manager))
+    net_per_sock[sock] = net
+    sock.settimeout(0.5)
     while True:
-        exited = net.wait_recv()
-        if exited:
-            print("Exiting thread")
+        with lock_per_sock[sock]:
+            try:
+                exited = net.wait_recv()
+                if exited:
+                    print("Exiting thread")
+                    return
+            except socket.timeout:
+                pass
+
+
+def update_coordinates(sid, change_id, change_type, start, end, offset):
+    """
+    Update coordinates of other pending changes based on the applied change
+
+    Parameters:
+    - sid: Summary ID
+    - change_id: ID of the current change being processed
+    - change_type: Type of change (INSERT, DELETE, UPDATE)
+    - start: Start position of the change
+    - end: End position of the change
+    - offset: The amount by which positions shift (positive or negative)
+    """
+
+    for other_id, other_changes in doc_changes[sid].items():
+        if other_id == change_id:
+            continue
+
+        for other_change in other_changes:
+            # Handle each change type's coordinate updates
+            if change_type == "INSERT":
+                # For inserts, all positions at or after start point are shifted
+                if other_change["cord"][0] >= start:
+                    other_change["cord"][0] += offset
+                if other_change["cord"][1] >= start:
+                    other_change["cord"][1] += offset
+
+            elif change_type == "DELETE":
+                # For deletes, positions after end shift backward
+                # Positions between start and end collapse to start
+                if other_change["cord"][0] >= end:
+                    other_change["cord"][0] += offset
+                elif other_change["cord"][0] > start:
+                    other_change["cord"][0] = start
+
+                if other_change["cord"][1] >= end:
+                    other_change["cord"][1] += offset
+                elif other_change["cord"][1] > start:
+                    other_change["cord"][1] = start
+
+            elif change_type == "UPDATE":
+                # For updates, positions after end shift by the size difference
+                if other_change["cord"][0] >= end:
+                    other_change["cord"][0] += offset
+
+                if other_change["cord"][1] >= end:
+                    other_change["cord"][1] += offset
+
+
+def summary_thread(sid, db_manager):
+    try:
+        sid = int(sid)
+        with doc_changes_lock:
+            doc: Summary = db_manager.get_summary(sid)
+            doc_content: str = doc.content if doc and doc.content else ""
+            # print(doc_changes)
+            while ids_per_summary_id[sid]:
+                # print(ids_per_summary_id)
+                # print(
+                #     f"Currently we have: {len(ids_per_summary_id[sid])} people to edit {sid}"
+                # )
+                while not doc_changes.get(sid, []):
+                    # print("Still no changes")
+                    # print(doc_changes, doc_changes[sid])
+                    time.sleep(2)
+                print("Processing changes")
+                print(doc_changes[sid])
+                # Process one batch of changes at a time
+                for change_id, changes in list(doc_changes[sid].items()):
+                    # Process each change in this batch
+                    for change in changes:
+                        change = json.loads(change)["changes"]
+                        if not change:
+                            print("No change, skipping")
+                            continue
+                        change = change[0]
+                        print("Applying change: ", change)
+                        start, end = change["cord"]
+                        change_type = change["type"]
+                        content = change.get("cont", "")
+                        # Apply the change to document content
+                        if change_type == "INSERT":
+                            doc_content = (
+                                doc_content[:start] + content + doc_content[start:]
+                            )
+                            offset = len(content)
+
+                        elif change_type == "DELETE":
+                            doc_content = doc_content[:start] + doc_content[end:]
+                            offset = start - end
+
+                        # elif change_type == "UPDATE":
+                        else:
+                            doc_content = (
+                                doc_content[:start] + content + doc_content[end:]
+                            )
+                            offset = len(content) - (end - start)
+
+                        # Update coordinates for all other pending changes
+                        update_coordinates(
+                            sid, change_id, change_type, start, end, offset
+                        )
+
+                    # Save the updated document
+                    print("Final content: ", doc_content)
+
+                    # db_manager.save_summary(sid, doc_content)
+
+                    # Remove processed changes
+                    del doc_changes[sid][change_id]
+                    # ids_per_summary_id[sid].remove(change_id)
+                    print("Sending changes: ")
+                    print(doc_content)
+                    for id in ids_per_summary_id[sid]:
+                        # reverse the dict to get the sock per id
+                        sock_per_id = {v: k for k, v in id_per_sock.items()}
+                        with lock_per_sock[sock_per_id[id]]:
+                            net = net_per_sock[sock_per_id[id]]
+                            net.send_message(
+                                net.build_message(
+                                    "TAKEUPDATE",
+                                    [doc_content],
+                                )
+                            )
+                    print("Finished updating")
             return
+    except Exception as e:
+        print("Error in summary thread: ", e)
+        raise e
+        summary_thread(sid, db_manager)
+
+
+def spawn_summary_thread(summ, id, net, sid):
+    global threads
+    db_manager = DbManager()
+    db_manager.connect_to_db(
+        {
+            "host": "localhost",
+            "user": "root",
+            "password": (
+                os.getenv("DB_PASSWORD") if os.getenv("DB_PASSWORD") else "liad8888"
+            ),
+            "database": "finalproj",
+            "port": 3306,
+        }
+    )
+    thread = Thread(target=summary_thread, args=(sid, db_manager))
+    thread.start()
+    threads.append(thread)
 
 
 def main(sock, crypt):
     sock.listen(5)
+    global threads
     threads = []
     while True:
         print("Listening....")
         client_sock, addr = sock.accept()
         print(f"Connection from {addr}")
+        lock_per_sock[client_sock] = threading.Lock()
         thread = Thread(target=thread_main, args=(client_sock, addr, crypt))
         thread.start()
         threads.append(thread)
@@ -447,6 +727,7 @@ if __name__ == "__main__":
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("0.0.0.0", port))
     if os.path.isfile("private.pem"):
+        print("Using existing key")
         rsa_key = RSA.import_key(open("private.pem", "rb").read())
     else:
         rsa_key = RSA.generate(2048)
@@ -459,5 +740,4 @@ if __name__ == "__main__":
     # )
 
     crypt = cryptManager.CryptManager(rsa_key)
-    main(sock, crypt)
     main(sock, crypt)

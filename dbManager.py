@@ -45,6 +45,7 @@ class Summary:
     updateTime: datetime.datetime = field(default_factory=datetime.datetime.now)
 
 
+# {"username": "u1", "position": 1, "content": "hello", "type": "insert"}
 class DbManager:
     def __init__(self):
         self.connection: Optional[MySQLConnection | PooledMySQLConnection] = None
@@ -65,6 +66,12 @@ class DbManager:
             print("Connected to database")
         except Error as e:
             print(f"Error connecting to database: {e}")
+
+    def get_id_by_username(self, username) -> int:
+        query = "SELECT id FROM User WHERE username = %s"
+        self.cursor.execute(query, (username,))
+        result = self.cursor.fetchone()
+        return result["id"] if result else -1
 
     def insert_user(self, username: str, password_hash: str, salt: bytes) -> bool:
         """Insert a new user into the database."""
@@ -89,6 +96,45 @@ class DbManager:
             return True
         except Error as e:
             print(f"Error inserting user: {e}")
+            return False
+
+    def share_summary(
+        self,
+        summary_id: int,
+        owner_id: int,
+        user_to_share_with_id: int,
+        permission_type: str,
+    ) -> bool:
+        """Verify if the user owns the summary, then share it with another user."""
+        try:
+            # 1. Verify ownership: Check if the user is the owner of the summary
+            query = """
+                SELECT ownerId FROM summary WHERE id = %s
+            """
+            self.cursor.execute(query, (summary_id,))
+            result = self.cursor.fetchone()
+
+            # If no result is found or the owner doesn't match
+            if result is None or result["ownerId"] != owner_id:
+                print("User does not own this summary.")
+                return False
+
+            # 2. Share the summary: Insert permission record to share with another user
+            query = """
+                INSERT INTO permission (summaryId, userId, permissionType)
+                VALUES (%s, %s, %s)
+            """
+            self.cursor.execute(
+                query, (summary_id, user_to_share_with_id, permission_type)
+            )
+            self.connection.commit()
+
+            print(
+                f"Summary {summary_id} shared with user {user_to_share_with_id} with {permission_type} permission."
+            )
+            return True
+        except Error as e:
+            print(f"Error sharing summary: {e}")
             return False
 
     def get_user(self, username: str) -> Optional[User]:
@@ -450,11 +496,11 @@ class DbManager:
         try:
             query = """
                 SELECT DISTINCT s.*
-                FROM Summary s
-                LEFT JOIN permission p ON s.id = p.summaryId
+                FROM summary s
+                LEFT JOIN permission p ON s.id = p.summaryId AND p.userId = %s
                 WHERE s.ownerId = %s OR p.userId = %s
             """
-            self.cursor.execute(query, (user_id, user_id))
+            self.cursor.execute(query, (user_id, user_id, user_id))
             summaries = self.cursor.fetchall()
             return [Summary(**su) for su in summaries]
         except Error as e:
