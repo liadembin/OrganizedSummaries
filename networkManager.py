@@ -5,6 +5,7 @@ import select
 import time
 import os
 from cryptManager import CryptManager
+import threading
 
 
 class NetworkManager:
@@ -24,6 +25,7 @@ class NetworkManager:
         self.sock = sock
         self.handlers: Dict[str, Callable] = handlers
         self.crypt_manager = crypt
+        self.lock = threading.Lock()
 
     def _get_file_name(self, path: str) -> str:
         return os.path.basename(path)
@@ -62,8 +64,9 @@ class NetworkManager:
 
         :param message: The message string to send.
         """
-        print(f"SEND>>>{message[: min(50, len(message))]}")
-        self.sock.send(message.encode())
+        with self.lock:
+            print(f"SEND>>>{message[: min(100, len(message))]}")
+            self.sock.send(message.encode())
 
     def has_received(self) -> bool:
         """
@@ -71,19 +74,46 @@ class NetworkManager:
 
         :return: True if a new message is available, otherwise False.
         """
-        return self.sock in select.select([self.sock], [], [], 0)[0]
+        with self.lock:
+            return self.sock in select.select([self.sock], [], [], 0)[0]
 
     def recv_handle(self) -> None:
         """
         Receive a message from the socket connection and handle it with the appropriate handler function.
         """
+        if not self.has_received():
+            print("No message received.")
+            return
         message = self.recv_message()
         code = self.get_message_code(message)
-        if code in self.handlers:
+        if code in self.handlers.keys():
             print("Recived code: ", code)
             self.handlers[code](*self.get_message_params(message), net=self)
         else:
             print(f"Received message with unhandled code: {code}")
+            return True
+
+    def recv_handle_args(self, *args) -> bool:
+        """
+        Receive a message from the socket connection and handle it with the appropriate handler function.
+        """
+        if not self.has_received():
+            # print("Received message.")
+            # print("No message received.")
+            return False
+        message = self.recv_message()
+        code = self.get_message_code(message)
+        if code in self.handlers.keys():
+            print("Recived code: ", code)
+            self.handlers[code](*args, *self.get_message_params(message), net=self)
+            return True
+        else:
+            print(f"Received message with unhandled code: {code}")
+            print("Current codes:", self.handlers.keys())
+            raise Exception("Unhandled code.")
+
+    def set_lock(self, lock):
+        self.lock = lock
 
     def wait_recv(self) -> None:
         """
@@ -135,25 +165,38 @@ class NetworkManager:
         :return: The received message string.
         """
         # message = self.sock.recv(10).decode()
+
         message = self.recv_message_plain()
         payload, iv = self.get_message_params(message.decode())
         #  print(f"DECODING WITH: {iv} \n {self.crypt_manager.aes_key}")
         msg = self.crypt_manager.decrypt_data(
             base64.b64decode(payload), base64.b64decode(iv)
         ).decode()
-        print("DECODE TO: ", msg)
+        print("DECODE TO: ", msg[: min(60, len(msg))])
         return msg
 
     def recv_message_plain(self):
         size = b""
-        while len(size) < 10:
-            size += self.sock.recv(10 - len(size))
-        size_int = int(size.decode())
-        message = b""
-        while len(message) < size_int:
-            message += self.sock.recv(size_int - len(message))
-        print(f"RECV>>>{size}{message[:100]}")
-        return message
+        with self.lock:
+            while len(size) < 10:
+                size += self.sock.recv(10 - len(size))
+            size_int = int(size.decode())
+            message = b""
+            while len(message) < size_int:
+                try:
+                    message += self.sock.recv(size_int - len(message))
+                except ConnectionResetError:
+                    print("Connection reset by peer.")
+                    return ""
+                # except:
+                #     print("Socket timeout.")
+                except Exception as e:
+                    print("Error: ", e)
+                    # return ""
+                    print("Socket timeout.")
+
+            print(f"RECV>>>{size}{message[:30]}")
+            return message
 
     def send_message(self, message: str) -> None:
         """
@@ -161,15 +204,22 @@ class NetworkManager:
 
         :param message: The message string to send.
         """
-        print(f"SEND>>>{message}")
         #  print("ENCRYPTING WITH: ", self.crypt_manager.aes_key)
         arr = [
             base64.b64encode(d).decode()
             for d in self.crypt_manager.encrypt_data(message.encode())
         ]
-
-        # print("IV: ", arr[1])
-        self.sock.send(self.build_message("ENCODED", arr, do_size=True).encode())
+        if self.lock:
+            with self.lock:
+                # print("IV: ", arr[1])
+                print("Using lock.")
+                self.sock.send(
+                    self.build_message("ENCODED", arr, do_size=True).encode()
+                )
+                print(f"SEND>>>{message[: min(100, len(message))]}")
+        else:
+            self.sock.send(self.build_message("ENCODED", arr, do_size=True).encode())
+            print(f"SEND>>>{message[: min(100, len(message))]}")
 
 
 def run_tests():

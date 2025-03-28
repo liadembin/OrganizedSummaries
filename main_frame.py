@@ -26,14 +26,20 @@ class MainFrame(wx.Frame):
         self.listening_thread = threading.Thread(
             target=self.listen_for_changes, args=(self,), daemon=True
         )
+        self.update_lock = threading.Lock()
+        self.is_proccesing = threading.Event()
         # self.made_changes = []
         # Set up a timer to check for document changes
         self.update_timer = wx.Timer(self)
+        self.update_enable_timer = wx.Timer(self)
         self.Bind(wx.EVT_TIMER, self.update_doc, self.update_timer)
+        self.Bind(wx.EVT_TIMER, self.enable_listen, self.update_enable_timer)
+        net.set_lock(self.sock_lock)
         self.net = net
         self.username = username
+        self.listening_thread.start()
         self.html_content = ""  # To store HTML content
-
+        self.awaiting_update = False
         # Main panel
         panel = wx.Panel(self)
 
@@ -139,42 +145,118 @@ class MainFrame(wx.Frame):
         self.editor.SetFont(font)
         # Initialize HTML view
         self.prev_content = ""
+        self.last_update_time = 0
+        self.UPDATE_THROTTLE_INTERVAL = 2.0
         self.update_html_view()
+        self.carousel = None
+        self.events_dialog = None
 
-    def listen_for_changes(self):
-        # pass
+    def enable_listen(self, event):
+        # self.awaiting_update = True
+        pass
+
+    def handle_error(self, explaination, net):
+        # wx.MessageBox(f"Error: {explaination}", "Error", wx.OK | wx.ICON_ERROR)
+        wx.CallAfter(
+            wx.MessageBox, f"Error: {explaination}", "Error", wx.OK | wx.ICON_ERROR
+        )
+        return
+
+    def handle_take_summaries(self, _, *params, net):
+        summaries = []
+        for summary in params:
+            summ = pickle.loads(base64.b64decode(summary))
+            summaries.append(summ)
+
+        def show_summaries():
+            if not summaries:
+                wx.MessageBox(
+                    "No summaries found.", "Info", wx.OK | wx.ICON_INFORMATION
+                )
+                return
+
+            # Show carousel
+            self.carousel = SummaryCarousel(summaries, self.net, self)
+            self.carousel.ShowModal()
+            self.carousel.Destroy()
+            print("Set up carousel")
+        wx.CallAfter(show_summaries)
+
+    def handle_take_events(self, *params, net):
+        events = []
+        for event_data in params:
+            event = pickle.loads(base64.b64decode(event_data))
+            events.append(event)
+
+        def show_events():
+            if not events:
+                wx.MessageBox("No events found.", "Info", wx.OK | wx.ICON_INFORMATION)
+                return
+
+            # Show events dialog
+            self.events_dialog = EventsDialog(events, self, self.net)
+            self.events_dialog.ShowModal()
+            self.events_dialog.Destroy()
+
+        wx.CallAfter(show_events)
+
+    def handle_event_success(self, *params, net):
+        wx.CallAfter(
+            wx.MessageBox,
+            f"Event '{self.event_title}' on {self.formatted_date} at {self.formatted_time} added.",
+            "Success",
+            wx.OK | wx.ICON_INFORMATION,
+        )
+        wx.CallAfter(self.dialog.Destroy)
+
+    def save_handlers(self, *params, net):
+        print("Save, response: ", params)
+
+    def on_file_content(self, *params, net):
+        def update_editor():
+            self.editor.AppendText(params[0])
+            self.update_html_view()
+
+        wx.CallAfter(update_editor)
+
+    def on_summary_recived(self, *params, net):
+        def update_summary():
+            summ = params[0]
+            start, end = self.editor.GetSelection()
+            self.editor.Replace(start, end, summ)
+            self.update_html_view()
+
+        wx.CallAfter(update_summary)
+
+    def listen_for_changes(self, *_):
+        """Optimized listening thread with better error handling"""
         self.handlers = {
-            "ERROR": "",
-            "LOGIN_FAIL": "",
-            "LOGIN_SUCCESS": "",
-            "REGISTER_FAIL": "",
-            "REGISTER_SUCCESS": "",
-            "TAKESUMMARIES": "",
-            "SAVE_SUCCESS": "",
-            "EVENT_SUCCESS": "",
-            "FILECONTENT": "",
-            "SUMMARY": "",
-            "EXPORTED": "",
-            "TAKEEVENTS": "",
-            "DELETE_SUCCESS": "",
-            "INFO": "",
-            "SHARE_SUCCESS": "",
-            "TAKEUPDATE": "",
+            "ERROR": self.handle_error,
+            "TAKESUMMARIES": self.handle_take_summaries,
+            "SAVE_SUCCESS": self.save_handlers,
+            "EVENT_SUCCESS": self.handle_event_success,
+            "FILECONTENT": self.on_file_content,
+            "SUMMARY": self.on_summary_recived,
+            "TAKEEVENTS": self.handle_take_events,
+            "INFO": self.handle_info,
+            "TAKEUPDATE": self.take_update,
+            "SHARE_SUCCESS": lambda a, *params, net: print("Shared successfully. ", params),
+            "TAKESUMMARY": self.handle_recived_summary,
         }
-        # self.net.add_handlers(self.handlers)
+        
+        self.net.add_handlers(self.handlers)
         self.net.sock.settimeout(0.5)
-        import socket
-
         while True:
-            with self.sock_lock:
-                try:
-                    self.net.recv_handle()
-                # time.sleep(0.2)
-                except socket.timeout:
-                    pass
-                except Exception as e:
-                    print("Error in listening thread")
-                    raise e
+            try:
+                # Non-blocking receive with better error management
+                found_any = self.net.recv_handle_args(self)
+                
+                if not found_any:
+                    time.sleep(0.1)  # Reduced sleep time
+
+            except Exception as e:
+                print(f"Listening Thread Error: {e}")
+                time.sleep(1)  # Prevent tight error loop
 
     def share_summary(self, event):
         print("Sharing summary")
@@ -185,16 +267,6 @@ class MainFrame(wx.Frame):
             username = dialog.GetValue()
             print("Sharing with: ", username)
             self.net.send_message(self.net.build_message("SHARESUMMARY", [username]))
-            msg = self.net.recv_message()
-            code, params = (
-                self.net.get_message_code(msg),
-                self.net.get_message_params(msg),
-            )
-            print("CODE RESPONSE :", code)
-            print("PARAMS RESPONSE: ", params)
-            if code.strip() == "ERROR":
-                wx.MessageBox(f"Error: {params[0]}", "Error", wx.OK | wx.ICON_ERROR)
-                return
 
         else:
             print("Share canceled by user.")
@@ -260,61 +332,102 @@ class MainFrame(wx.Frame):
         panel.SetSizer(vbox)
 
         dialog.ShowModal()
-
+    def is_update_throttled(self):
+        """Check if an update should be throttled based on time since last update"""
+        current_time = time.time()
+        if current_time - self.last_update_time < self.UPDATE_THROTTLE_INTERVAL:
+            return True
+        self.last_update_time = current_time
+        return False
     def update_doc(self, event):
-        print("Should update")
-        old_text = self.prev_content
-        print("Old text:", old_text)
-        new_text = self.editor.GetValue()
-        changes = []
+        # if self.awaiting_update:
+        #     return print("Awaiting update, not sending another")
+        if self.is_proccesing.is_set():
+            return print("Is proccesing, not sending another")
+        if self.is_update_throttled():
+            return 
+        with self.update_lock:
+            old_text = self.prev_content
+            new_text = self.editor.GetValue()
+            
+            # Detect if content has actually changed
+            if old_text == new_text:
+                return
+            
+            # Use advanced diff algorithm
+            matcher = difflib.SequenceMatcher(None, old_text, new_text)
+            changes = []
 
-        # Use SequenceMatcher instead of ndiff
-        matcher = difflib.SequenceMatcher(None, old_text, new_text)
+            for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+                if tag == 'equal':
+                    continue
 
-        # Get opcodes (tag, i1, i2, j1, j2) where tag is one of:
-        # 'replace', 'delete', 'insert', 'equal'
-        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-            if tag == "equal":
-                continue
+                change_type = {
+                    'replace': 'UPDATE', 
+                    'delete': 'DELETE', 
+                    'insert': 'INSERT'
+                }.get(tag, tag)
+                
+                content = new_text[j1:j2] if tag in ['replace', 'insert'] else ''
+                
+                changes.append({
+                    'cord': [i1, i2], 
+                    'type': change_type, 
+                    'cont': content
+                })
+            
+            # Only send update if there are meaningful changes
+            if changes:
+                payload = json.dumps({"changes": changes})
+                try:
+                    self.net.send_message(self.net.build_message("UPDATEDOC", [payload]))
+                    self.prev_content = new_text
+                    self.awaiting_update = True
+                except Exception as e:
+                    print(f"Error sending update: {e}")
 
-            # Map difflib operations to your change types
-            if tag == "replace":
-                change_type = "UPDATE"
-                content = new_text[j1:j2]
-            elif tag == "delete":
-                change_type = "DELETE"
-                content = ""
-            elif tag == "insert":
-                change_type = "INSERT"
-                content = new_text[j1:j2]
 
-            changes.append({"cord": [i1, i2], "type": change_type, "cont": content})
-        payload = json.dumps({"changes": changes})
-        print("Payload: ", payload)
-        self.net.send_message(self.net.build_message("UPDATEDOC", [payload]))
-        self.prev_content = new_text
-        # recv other made changes and apply them
-        # self.net.sock.settimeout(0.1)
+    def handle_info(self, *params, net):
+        print("Recived info: ", params)
+
+    def take_update(self, _, *params, net):
+        """Enhanced server update handler with input freezing"""
         try:
-            msg = self.net.recv_message()
-            code, params = (
-                self.net.get_message_code(msg),
-                self.net.get_message_params(msg),
-            )
-            print("Recived code; ", code)
-            if code.strip() == "ERROR":
-                wx.MessageBox(f"Error: {params[0]}", "Error", wx.OK | wx.ICON_ERROR)
-                return
-            if code.strip() == "INFO":
-                print("Recived info: ", params)
-                return
-            print("THE PARAMS: ", params)
-            self.editor.SetValue(params[0])
-            self.prev_content = params[0]
-            self.update_html_view()
+            # Indicate server update is in progress
+            self.is_proccesing.set()
+            
+            # Decode update
+            jsoned = json.loads(base64.b64decode(params[0]).decode())
+            
+            def update_ui():
+                try:
+                    # Disable editor during update
+                    self.editor.Disable()
+                    
+                    # Update content
+                    new_content = jsoned['doc_content']
+                    self.editor.SetValue(new_content)
+                    self.prev_content = new_content
+                    self.update_html_view()
+                    
+                    # Re-enable editor after short delay
+                    wx.CallLater(500, self.editor.Enable)
+                    
+                    # Clear update flags
+                    self.awaiting_update = False
+                    self.is_proccesing.clear()
+                
+                except Exception as e:
+                    print(f"UI Update Error: {e}")
+                    self.editor.Enable()
+                    self.is_proccesing.clear()
+
+            # Ensure UI update happens on main thread
+            wx.CallAfter(update_ui)
+        
         except Exception as e:
-            print("No new changes")
-            raise e
+            print(f"Update Processing Error: {e}")
+            self.is_proccesing.clear()
 
     def on_font_selector(self, event):
         dialog = FontSelectorDialog(self, self.net)
@@ -634,15 +747,6 @@ class MainFrame(wx.Frame):
         selected = self.editor.GetStringSelection()
         print("Currently selecting : ", selected)
         self.net.send_message(self.net.build_message("SUMMARIZE", [selected]))
-        summ = self.net.get_message_params(self.net.recv_message())[0]
-        print("THE SUMM: ", summ)
-
-        # Update the selected text
-        start, end = self.editor.GetSelection()
-        self.editor.Replace(start, end, summ)
-
-        # Update HTML view
-        self.update_html_view()
 
     def show_export_menu(self, event):
         print("Showing export menu")
@@ -687,33 +791,9 @@ class MainFrame(wx.Frame):
         self.net.send_message(
             self.net.build_message("GETFILECONTENT", [os.path.basename(path)])
         )
-        content = self.net.get_message_params(self.net.recv_message())
-        # print("THE CONTENT: ", content)
-        self.editor.AppendText(content[0])
-        self.update_html_view()
 
     def on_view_events(self, event):
         self.net.send_message(self.net.build_message("GETEVENTS", []))
-        msg = self.net.recv_message()
-        code, params = self.net.get_message_code(msg), self.net.get_message_params(msg)
-
-        if code.strip() == "ERROR":
-            wx.MessageBox(f"Error: {params[0]}", "Error", wx.OK | wx.ICON_ERROR)
-            return
-
-        events = []
-        for event_data in params:
-            event = pickle.loads(base64.b64decode(event_data))
-            events.append(event)
-
-        if not events:
-            wx.MessageBox("No events found.", "Info", wx.OK | wx.ICON_INFORMATION)
-            return
-
-        # Show events dialog
-        events_dialog = EventsDialog(events, self, self.net)
-        events_dialog.ShowModal()
-        events_dialog.Destroy()
 
     def on_add_event(self, event):
         dialog = wx.Dialog(self, title="Add New Event", size=(400, 300))
@@ -758,12 +838,12 @@ class MainFrame(wx.Frame):
 
         # Show the dialog and handle result
         if dialog.ShowModal() == wx.ID_OK:
-            event_title = title_input.GetValue()
-            event_date = date_picker.GetValue()
-            event_time = time_picker.GetValue()
+            self.event_title = title_input.GetValue()
+            self.event_date = date_picker.GetValue()
+            self.event_time = time_picker.GetValue()
 
             # Validate inputs
-            if not event_title:
+            if not self.event_title:
                 wx.MessageBox(
                     "Please enter an event title.", "Error", wx.OK | wx.ICON_ERROR
                 )
@@ -771,29 +851,17 @@ class MainFrame(wx.Frame):
                 return
 
             # Convert wx date and time to Python date and time
-            formatted_date = event_date.FormatISODate()
-            formatted_time = event_time.Format("%H:%M:%S")
-            datetime_str = f"{formatted_date} {formatted_time}"
+            self.formatted_date = self.event_date.FormatISODate()
+            self.formatted_time = self.event_time.Format("%H:%M:%S")
+            self.datetime_str = f"{self.formatted_date} {self.formatted_time}"
 
             self.net.send_message(
-                self.net.build_message("ADDEVENT", [event_title, datetime_str])
+                self.net.build_message(
+                    "ADDEVENT", [self.event_title, self.datetime_str]
+                )
             )
-            msg = self.net.recv_message()
-            code, params = (
-                self.net.get_message_code(msg),
-                self.net.get_message_params(msg),
-            )
-            if code.strip() == "ERROR":
-                wx.MessageBox(f"Error: {params[0]}", "Error", wx.OK | wx.ICON_ERROR)
-                return
-
-            wx.MessageBox(
-                f"Event '{event_title}' on {formatted_date} at {formatted_time} added.",
-                "Success",
-                wx.OK | wx.ICON_INFORMATION,
-            )
-
-            dialog.Destroy()
+            self.dialog = dialog
+            # might be better to create the handler dynamically here, rather than have all state in the class
 
     def export_as_markdown(self, event):
         print("Exporting as Markdown")
@@ -902,8 +970,8 @@ class MainFrame(wx.Frame):
         if dialog.ShowModal() == wx.ID_CANCEL:
             return
         path = dialog.GetPath()
-        if path.endswith(".pdf"):
-            return self.get_pdf_content(path)
+        # if path.endswith(".pdf"):
+        #     return self.get_pdf_content(path)
         dialog.Destroy()
         with open(path, "r") as f:
             return f.read()
@@ -923,7 +991,7 @@ class MainFrame(wx.Frame):
         if code.strip() == "ERROR":
             wx.MessageBox(f"Error: {params[0]}", "Error", wx.OK | wx.ICON_ERROR)
             return
-
+        #
         summaries = []
         for summary in params:
             summ = pickle.loads(base64.b64decode(summary))
@@ -969,10 +1037,49 @@ class MainFrame(wx.Frame):
                 "SAVE", [title, self.editor.GetValue(), font_info_str]
             )
         )
-        msg = self.net.recv_message()
-        code, params = self.net.get_message_code(msg), self.net.get_message_params(msg)
-        print("CODE RESPONSE :", code)
-        print("PARAMS RESPONSE: ", params)
+
+    def handle_recived_summary(self, _, *params, net):
+        def process_summary():
+            try:
+                dic = pickle.loads(base64.b64decode(params[0]))
+                cont = dic["data"].decode()
+                dicty = {"font": dic["summ"].font}
+
+                self.editor.SetValue(cont)
+                self.prev_content = cont
+
+                dicty["font"] = dicty.get("font", "Arial")
+                if dicty["font"].startswith("http"):
+                    self.current_font = {
+                        "name": dicty["font"],
+                        "url": dicty["font"],
+                        "from_url": True,
+                    }
+                else:
+                    self.current_font = {
+                        "name": dicty["font"],
+                        "url": None,
+                        "from_url": False,
+                    }
+
+                self.update_timer.Start(3000)  # Check every 3 seconds
+                self.update_enable_timer.Start(10000)
+
+                if hasattr(self, "carousel") and self.carousel:
+                    self.carousel.Close()
+                else:
+                    print("No carousel to close")
+                self.update_doc(None)
+            except Exception as e:
+                print("Error: ", e)
+                wx.MessageBox(
+                    "Error: Could not retrieve summary content.",
+                    "Error",
+                    wx.OK | wx.ICON_ERROR,
+                )
+                self.Close()
+
+        wx.CallAfter(process_summary)
 
 
 class EventsDialog(wx.Dialog):
@@ -1054,18 +1161,20 @@ class EventsDialog(wx.Dialog):
         """Handles delete event and refreshes UI."""
         btn_id = event.GetId()
         self.net.send_message(self.net.build_message("DELETEEVENT", [str(btn_id)]))
-        msg = self.net.recv_message()
-        code, params = self.net.get_message_code(msg), self.net.get_message_params(msg)
 
-        if code.strip() == "ERROR":
-            wx.MessageBox(f"Error: {params[0]}", "Error", wx.OK | wx.ICON_ERROR)
-            return
+        def on_delete_success(parent, *params, net):
+            selfrl = parent.events_dialog
+            # msg = self.net.recv_message()
+            # code, params = self.net.get_message_code(
+            #     msg), self.net.get_message_params(msg)
 
-        # Remove event from list
-        self.events = [event for event in self.events if event["id"] != btn_id]
+            # Remove event from list
+            selfrl.events = [event for event in self.events if event["id"] != btn_id]
 
-        # Refresh UI
-        self.setup_ui()
+            # Refresh UI
+            selfrl.setup_ui()
+
+        self.parent.net.add_handler("DELETE_SUCCESS", on_delete_success)
 
     def on_close(self, event):
         self.Close()
@@ -1123,47 +1232,11 @@ class SummaryCarousel(wx.Dialog):
             "Open Summary",
             wx.OK | wx.ICON_INFORMATION,
         )
+
+        # self.net.add_handler("GETSUMMARY", handle_summary)
         self.net.send_message(
             self.net.build_message("GETSUMMARY", [str(selected_summary.id)])
         )
-        print("Sent get summary message")
-        try:
-            dic: Dict = pickle.loads(
-                base64.b64decode(
-                    self.net.get_message_params(self.net.recv_message())[0]
-                )
-            )
-            cont = dic["data"].decode()
-            dicty = {"font": dic["summ"].font}
-            print(dic)
-            self.parent.editor.SetValue(cont)
-            self.parent.prev_content = cont
-            print("updated old text to: ", self.parent.prev_content)
-            dicty["font"] = dicty.get("font", "Arial")
-            if dicty["font"].startswith("http"):
-                self.parent.current_font = {
-                    "name": dicty["font"],
-                    "url": dicty["font"],
-                    "from_url": True,
-                }
-            else:
-                self.parent.current_font = {
-                    "name": dicty["font"],
-                    "url": None,
-                    "from_url": False,
-                }
-            print(self.parent.current_font)
-            self.parent.update_timer.Start(1000)  # Check every 500ms
-            self.Close()
-        except Exception as e:
-            print("Error: ", e)
-            wx.MessageBox(
-                "Error: Could not retrieve summary content.",
-                "Error",
-                wx.OK | wx.ICON_ERROR,
-            )
-            self.Close()
-            return
 
     def on_close(self, event):
         self.Close()

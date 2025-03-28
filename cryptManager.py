@@ -37,6 +37,7 @@ class CryptManager:
             raise ValueError("AES key is not set.")
         iv = get_random_bytes(16)
         aes_cipher = AES.new(self.aes_key, AES.MODE_CBC, iv)
+        print("IV: ", iv, "KEY: ", self.aes_key, "DATA: ", data)
         return aes_cipher.encrypt(pad(data, 16)), iv
 
     def generate_aes_key(self):
@@ -45,6 +46,7 @@ class CryptManager:
     def decrypt_data(self, data: bytes, iv: bytes) -> bytes:
         if self.aes_key is None:
             raise ValueError("AES Key is not set.")
+        print("IV: ", iv, "KEY: ", self.aes_key, "DATA: ", data)
         aes_cipher = AES.new(self.aes_key, AES.MODE_CBC, iv)
         return unpad(aes_cipher.decrypt(data), 16)
 

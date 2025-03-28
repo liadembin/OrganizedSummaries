@@ -249,6 +249,18 @@ class DbManager:
         except (Error, IOError) as e:
             print(f"Error inserting summary: {e}")
             return -1
+    def save_summary(self,sid, content):
+        try:
+            query = "SELECT path_to_summary FROM Summary WHERE id = %s"
+            self.cursor.execute(query, (sid,))
+            result = self.cursor.fetchone()
+            filepath = result["path_to_summary"]
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(content)
+            return True
+        except (Error, IOError) as e:
+            print(f"Error saving summary: {e}")
+            return False
 
     def get_summary(self, summary_id: str) -> Optional[Summary]:
         """Get summary by ID, including file contents."""

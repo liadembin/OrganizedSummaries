@@ -18,7 +18,7 @@ def ExtractText(path):
     return text
 
 
-HAS_SHITTONE_OF_RAM = True
+HAS_SHITTONE_OF_RAM = False
 summarizer = None
 
 

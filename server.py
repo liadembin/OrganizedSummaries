@@ -374,6 +374,7 @@ def handle_get_summary_by_link(db_manager) -> Callable:
         if summ is None:
             net.send_message(net.build_message("ERROR", ["SUMMARY NOT FOUND"]))
             return True
+        
         with open(summ.path_to_summary, "rb") as f:
             data = f.read()
         print("Data: ", data)
@@ -462,14 +463,22 @@ def handle_update_document(db_manager) -> Callable:
             print("User hasnt oppened a document")
             net.send_message(net.build_message("INFO", ["NO DOCUMENT OPENED"]))
             return False
-        print("Appending to Doc changes: ", doc_changes)
+        # print("Appending to Doc changes: ", doc_changes)
         with doc_changes_lock:
             if document_id not in doc_changes:
                 doc_changes[document_id] = {}
             if id not in doc_changes[document_id]:
                 doc_changes[document_id][id] = []
-            if changes:
+            # print(type(changes))
+            # print("changes: ", changes)
+            # print("changes[changes]: ", changes["changes"])
+
+            if json.loads(changes)["changes"]:
                 doc_changes[document_id][id].append(changes)
+                # print("Appended: ", changes)
+                # print("\n\n\n")
+            # else:
+            # print("No changes to append? ")
         # print("Appended to Doc changes: ", doc_changes)
         return False
 
@@ -507,6 +516,7 @@ def handle_share_summary(db_manager: DbManager) -> Callable:
 
 def thread_main(sock, addr, crypt):
     net: networkManager.NetworkManager = handle_key_exchange(sock, crypt)
+    net.set_lock(threading.Lock())
     print("Finished key exchange for: ", addr)
     db_manager = DbManager()
     db_manager.id_per_sock = id_per_sock
@@ -545,14 +555,17 @@ def thread_main(sock, addr, crypt):
     net_per_sock[sock] = net
     sock.settimeout(0.5)
     while True:
-        with lock_per_sock[sock]:
-            try:
-                exited = net.wait_recv()
-                if exited:
-                    print("Exiting thread")
-                    return
-            except socket.timeout:
-                pass
+        # with lock_per_sock[sock]:
+        try:
+            exited = net.recv_handle()  # net.wait_recv()
+            if exited:
+                print("Exiting thread")
+                return
+
+            time.sleep(1)
+        except socket.timeout:
+            print("Timeout lock outght to free")
+            pass
 
 
 def update_coordinates(sid, change_id, change_type, start, end, offset):
@@ -606,21 +619,34 @@ def update_coordinates(sid, change_id, change_type, start, end, offset):
 def summary_thread(sid, db_manager):
     try:
         sid = int(sid)
+        print("Starting summary thread for: ", sid)
         with doc_changes_lock:
             doc: Summary = db_manager.get_summary(sid)
             doc_content: str = doc.content if doc and doc.content else ""
-            # print(doc_changes)
-            while ids_per_summary_id[sid]:
-                # print(ids_per_summary_id)
-                # print(
-                #     f"Currently we have: {len(ids_per_summary_id[sid])} people to edit {sid}"
-                # )
-                while not doc_changes.get(sid, []):
-                    # print("Still no changes")
-                    # print(doc_changes, doc_changes[sid])
-                    time.sleep(2)
-                print("Processing changes")
-                print(doc_changes[sid])
+
+        print("Entering the while loop")
+        while ids_per_summary_id[sid]:
+            # print("In the while")
+            # Wait for changes with a timeout
+            changes_found = False
+
+            # Check for changes with the lock held
+            with doc_changes_lock:
+                # print("Got lock. checking for changes")
+                if sid in doc_changes and doc_changes[sid]:
+                    changes_found = True
+                    print(f"Found changes for summary {sid}")
+                    print(doc_changes[sid])
+
+            # If no changes, sleep and continue
+            if not changes_found:
+                time.sleep(0.5)  # More reasonable sleep time
+                continue
+            # Process changes (with lock)
+            with doc_changes_lock:
+                if sid not in doc_changes or not doc_changes[sid]:
+                    continue  # Double-check in case changes were processed by another thread
+
                 # Process one batch of changes at a time
                 for change_id, changes in list(doc_changes[sid].items()):
                     # Process each change in this batch
@@ -634,6 +660,7 @@ def summary_thread(sid, db_manager):
                         start, end = change["cord"]
                         change_type = change["type"]
                         content = change.get("cont", "")
+
                         # Apply the change to document content
                         if change_type == "INSERT":
                             doc_content = (
@@ -660,30 +687,52 @@ def summary_thread(sid, db_manager):
                     # Save the updated document
                     print("Final content: ", doc_content)
 
-                    # db_manager.save_summary(sid, doc_content)
+                    # Uncomment if you want to save to database after each batch of changes
+                    db_manager.save_summary(sid, doc_content)
 
                     # Remove processed changes
                     del doc_changes[sid][change_id]
-                    # ids_per_summary_id[sid].remove(change_id)
-                    print("Sending changes: ")
-                    print(doc_content)
-                    for id in ids_per_summary_id[sid]:
-                        # reverse the dict to get the sock per id
+
+                    # Send updates to all connected users
+                    print("Sending changes to all users")
+
+            # Send updates to all connected users (do this outside the lock to avoid holding it too long)
+                print("Connected ids: ", ids_per_summary_id[sid])
+                print("ill send to both: ", doc_content)
+                for id in ids_per_summary_id[sid]:
+                    print("Sending to uid", id)
+                    try:
                         sock_per_id = {v: k for k, v in id_per_sock.items()}
-                        with lock_per_sock[sock_per_id[id]]:
-                            net = net_per_sock[sock_per_id[id]]
-                            net.send_message(
-                                net.build_message(
-                                    "TAKEUPDATE",
-                                    [doc_content],
-                                )
+                        # with lock_per_sock[sock_per_id[id]]:
+                        print("Got lock for socket")
+                        net = net_per_sock[sock_per_id[id]]
+                        net.send_message(
+                            net.build_message(
+                                "TAKEUPDATE",
+                                [base64.b64encode(json.dumps({"doc_content":doc_content}).encode()).decode()],
                             )
-                    print("Finished updating")
-            return
+                        )
+                    except Exception as e:
+                        print(f"Error sending update to user {id}: {e}")
+
+            print("Finished updating all users")
+            print("Re running while")
+        return
     except Exception as e:
         print("Error in summary thread: ", e)
-        raise e
+        import traceback
+
+        traceback.print_exc()
+        # Attempt to restart the thread on error
         summary_thread(sid, db_manager)
+    finally:
+        print("Summary thread terminated for summary ID:", sid)
+        # Save any pending changes before exiting
+        try:
+            # db_manager.save_summary(sid, doc_content)
+            print(f"Final document state saved for summary {sid}")
+        except Exception as e:
+            print(f"Failed to save final state: {e}")
 
 
 def spawn_summary_thread(summ, id, net, sid):
@@ -702,18 +751,22 @@ def spawn_summary_thread(summ, id, net, sid):
     )
     thread = Thread(target=summary_thread, args=(sid, db_manager))
     thread.start()
+    # thread.join()
     threads.append(thread)
 
-
-def main(sock, crypt):
+import copy
+def main(sock, crypt,t1):
     sock.listen(5)
     global threads
     threads = []
     while True:
+        t2 = time.time() 
+        print("Starting up time: ", t2-t1)
         print("Listening....")
         client_sock, addr = sock.accept()
         print(f"Connection from {addr}")
         lock_per_sock[client_sock] = threading.Lock()
+        crypt = cryptManager.CryptManager(rsa_key)
         thread = Thread(target=thread_main, args=(client_sock, addr, crypt))
         thread.start()
         threads.append(thread)
@@ -722,6 +775,7 @@ def main(sock, crypt):
 
 
 if __name__ == "__main__":
+    t1 = time.time()
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 12345
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -739,5 +793,4 @@ if __name__ == "__main__":
     #     else RSA.generate(2048)
     # )
 
-    crypt = cryptManager.CryptManager(rsa_key)
-    main(sock, crypt)
+    main(sock, rsa_key,t1)
