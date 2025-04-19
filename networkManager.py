@@ -98,6 +98,27 @@ class NetworkManager:
             print("Connection reset by peer.")
             return True
 
+    def recv_handle_server(self, *args) -> None:
+        """
+        Receive a message from the socket connection and handle it with the appropriate handler function.
+        """
+        try:
+            if not self.has_received():
+                # print("No message received.")
+                return
+            message = self.recv_message()
+            code = self.get_message_code(message)
+            if code in self.handlers.keys():
+                print("Recived code: ", code)
+                self.handlers[code](*args, *self.get_message_params(message), net=self)
+            else:
+                print(f"Received message with unhandled code: {code}")
+                return True
+        # ConnectionResetError
+        except ConnectionResetError:
+            print("Connection reset by peer.")
+            return True
+
     def recv_handle_args(self, *args) -> bool:
         """
         Receive a message from the socket connection and handle it with the appropriate handler function.

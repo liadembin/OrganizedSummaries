@@ -7,7 +7,8 @@ from Crypto.Random import get_random_bytes
 from Crypto.Util.Padding import pad, unpad
 import hashlib
 from typing import Tuple, Optional
-PRINT_PLAIN = False 
+
+PRINT_PLAIN = False
 # import logging
 
 
