@@ -5,11 +5,9 @@ from Crypto.PublicKey import RSA
 from Crypto.Cipher import AES, PKCS1_OAEP
 from Crypto.Random import get_random_bytes
 from Crypto.Util.Padding import pad, unpad
-from base64 import b64encode, b64decode
-import os
 import hashlib
 from typing import Tuple, Optional
-
+PRINT_PLAIN = False 
 # import logging
 
 
@@ -38,7 +36,8 @@ class CryptManager:
         iv = get_random_bytes(16)
         aes_cipher = AES.new(self.aes_key, AES.MODE_CBC, iv)
         # print("IV: ", iv, "KEY: ", self.aes_key, "DATA: ", data)
-        print("ENC(rypting)>>>", data)
+        if PRINT_PLAIN:
+            print("ENC(rypting)>>>", data)
         return aes_cipher.encrypt(pad(data, 16)), iv
 
     def generate_aes_key(self):
@@ -48,7 +47,8 @@ class CryptManager:
         if self.aes_key is None:
             raise ValueError("AES Key is not set.")
         # print("IV: ", iv, "KEY: ", self.aes_key, "DATA: ", data)
-        print("DEC>>>", data)
+        if PRINT_PLAIN:
+            print("DEC>>>", data)
         aes_cipher = AES.new(self.aes_key, AES.MODE_CBC, iv)
         return unpad(aes_cipher.decrypt(data), 16)
 

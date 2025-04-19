@@ -16,7 +16,7 @@ from GraphDial import GraphDialog
 from EventDiag import EventsDialog
 from FontDiag import FontSelectorDialog
 from SummaryCarousell import SummaryCarousel
-
+import traceback
 
 class MainFrame(wx.Frame):
     def __init__(self, net: NetworkManager, username):
@@ -153,7 +153,7 @@ class MainFrame(wx.Frame):
         self.events_dialog = None
 
     def on_graph(self, event):
-        print("Getting graph")
+        #print("Getting graph")
         self.net.send_message(self.net.build_message("GETGRAPH", []))
 
     def enable_listen(self, event):
@@ -184,7 +184,7 @@ class MainFrame(wx.Frame):
             self.carousel = SummaryCarousel(summaries, self.net, self)
             self.carousel.ShowModal()
             self.carousel.Destroy()
-            print("Removed caroussle")
+            #print("Removed caroussle")
 
         wx.CallAfter(show_summaries)
 
@@ -286,8 +286,11 @@ class MainFrame(wx.Frame):
             "TAKEEVENTS": self.handle_take_events,
             "INFO": self.handle_info,
             "TAKEUPDATE": self.take_update,
-            "SHARE_SUCCESS": lambda a, *params, net: print(
-                "Shared successfully. ", params
+            "SHARE_SUCCESS": lambda a, *params, net: wx.CallAfter(
+                wx.MessageBox,
+                f"Summary shared with {params[0]}",
+                "Success",
+                wx.OK | wx.ICON_INFORMATION,
             ),
             "TAKESUMMARY": self.handle_recived_summary,
             "TAKEGRAPH": self.handle_graph,
@@ -304,25 +307,24 @@ class MainFrame(wx.Frame):
                 if not found_any:
                     time.sleep(0.1)  # Reduced sleep time
 
-            except Exception as e:
-                print(f"Listening Thread Error: {e}")
-                import traceback
+            except Exception as _:
+                #print(f"Listening Thread Error: {e}")
 
                 traceback.print_exc()
                 time.sleep(1)  # Prevent tight error loop
 
     def share_summary(self, event):
-        print("Sharing summary")
+        #print("Sharing summary")
         dialog = wx.TextEntryDialog(
             None, "Enter the username to share with:", "Share Summary"
         )
         if dialog.ShowModal() == wx.ID_OK:
             username = dialog.GetValue()
-            print("Sharing with: ", username)
+            #print("Sharing with: ", username)
             self.net.send_message(self.net.build_message("SHARESUMMARY", [username]))
 
         else:
-            print("Share canceled by user.")
+            #print("Share canceled by user.")
             dialog.Destroy()
             return
 
@@ -401,9 +403,9 @@ class MainFrame(wx.Frame):
 
     def update_doc(self, event):
         # if self.awaiting_update:
-        #     return print("Awaiting update, not sending another")
+        #     return #print("Awaiting update, not sending another")
         if self.is_proccesing.is_set():
-            return print("Is proccesing, not sending another")
+            return #print("Is proccesing, not sending another")
         if self.is_update_throttled():
             return
         with self.update_lock:
@@ -415,13 +417,13 @@ class MainFrame(wx.Frame):
             new_text = self.normalize(
                 self.editor.GetValue()
             )  # self.editor.GetValue().replace("\r\n", "\n").rstrip()
-            print(f"Old Text: {repr(old_text[:50])}")
-            print(f"New Text: {repr(new_text[:50])}")
+            #print(f"Old Text: {repr(old_text[:50])}")
+            #print(f"New Text: {repr(new_text[:50])}")
 
             # Detect if content has actually changed
             if old_text == new_text:
-                print("No Changes")
-                return
+                #print("No Changes")
+                return  self.send_changes([],False)
 
             # Use advanced diff algorithm
             matcher = difflib.SequenceMatcher(None, old_text, new_text)
@@ -439,28 +441,37 @@ class MainFrame(wx.Frame):
 
                 content = new_text[j1:j2] if tag in ["replace", "insert"] else ""
                 if content == "" and tag != "delete":
-                    print("Not a real change.")
+                    #print("Not a real change.")
                     continue
                 changes.append({"cord": [i1, i2], "type": change_type, "cont": content})
 
             # Only send update if there are meaningful changes
-            if changes:
-                print("Found these changes: ", changes)
-                payload = json.dumps({"changes": changes})
-                try:
-                    self.net.send_message(
-                        self.net.build_message("UPDATEDOC", [payload])
-                    )
-                    self.prev_content = new_text
-                    self.awaiting_update = True
-                except Exception as e:
-                    print(f"Error sending update: {e}")
-
+            # if changes:
+            self.send_changes(changes,new_text)
+    def send_changes(   self, changes, new_text):
+        #print("Found these changes: ", changes)
+        payload = json.dumps({"changes": changes})
+        try:
+            self.net.send_message(
+                self.net.build_message("UPDATEDOC", [payload])
+            )
+            if new_text:
+                self.prev_content = new_text
+            self.awaiting_update = True
+        except Exception as _:
+            #print(f"Error sending update: {e}")
+            traceback.print_exc()
     def handle_info(self, *params, net):
-        print("Recived info: ", params)
+        #print("Recived info: ", params)
+        wx.CallAfter(
+            wx.MessageBox,
+                f"Info: {params[0]}",
+                "Info",
+                wx.OK | wx.ICON_INFORMATION,
+        )
 
     def handle_take_link(self, _, link, net):
-        print("Requesting link with sid: ", link)
+        #print("Requesting link with sid: ", link)
         self.net.send_message(self.net.build_message("GETSUMMARY", [link]))
 
     def take_update(self, _, *params, net):
@@ -490,16 +501,17 @@ class MainFrame(wx.Frame):
                     self.awaiting_update = False
                     self.is_proccesing.clear()
 
-                except Exception as e:
-                    print(f"UI Update Error: {e}")
+                except Exception as _:
+                    #print(f"UI Update Error: {e}")
                     self.editor.Enable()
                     self.is_proccesing.clear()
 
             # Ensure UI update happens on main thread
             wx.CallAfter(update_ui)
 
-        except Exception as e:
-            print(f"Update Processing Error: {e}")
+        except Exception as _:
+            #print(f"Update Processing Error: {e}")
+            traceback.print_exc()
             self.is_proccesing.clear()
 
     def on_font_selector(self, event):
@@ -516,7 +528,7 @@ class MainFrame(wx.Frame):
                 "url": font_url,
                 "from_url": from_url,
             }
-            print(self.current_font)
+            #print(self.current_font)
             # Apply the font to the editor
             font = wx.Font(
                 12,
@@ -557,11 +569,12 @@ class MainFrame(wx.Frame):
         prev_back_n = cont.rfind("\n", 0, text_pos - 1)
         if prev_back_n == -1:
             prev_back_n = 0
-        line = cont[prev_back_n:text_pos].strip()
+        # line = cont[prev_back_n:text_pos].strip()
 
-        if line.startswith("###"):
-            print("Found special line: ", line)
-            print("That's the special!!!!!!!!!!!")
+
+        # if line.startswith("###"):
+            #print("Found special line: ", line)
+            #print("That's the special!!!!!!!!!!!")
         self.update_html_view()
 
     def on_refresh_html(self, event):
@@ -705,26 +718,33 @@ class MainFrame(wx.Frame):
         html = [
             "<!DOCTYPE html><html><head>",
             "<style>",
-            "body { font-family: Arial, sans-serif; margin: 20px; }",
             "table { border-collapse: collapse; width: 100%; }",
             "th, td { border: 4px solid #000; padding: 8px; }",
             "th { background-color: #f2f2f2; }",
             "a { color: blue; text-decoration: underline; cursor: pointer; }",
             ".bold { font-weight: bold; }",
         ]
+        
+        # Handle font setup - either from URL or system font
         if self.current_font["from_url"] and self.current_font["url"]:
+            # For web fonts, use @font-face declaration
             font_url = self.current_font["url"]
             font_name = self.current_font["name"]
+            # Remove any invalid characters from font name
+            font_name = font_name.replace('|', '')
+            
             html.append("@font-face {{")
             html.append(f"  font-family: '{font_name}';")
             html.append(f"  src: url('{font_url}');")
             html.append("}}")
+            html.append(f"body {{ font-family: '{font_name}', sans-serif; margin: 20px; }}")
         else:
-            font_name = self.current_font["name"]
-            html.append(
-                f"body {{ font-family: '{font_name}', sans-serif; margin: 20px; }}"
-            )
+            # For system fonts, just set the font-family
+            font_name = self.current_font["name"].replace('|', '')# .replace("@","")
+            html.append(f"body {{ font-family: '{font_name}', sans-serif; margin: 20px; }}")
+        
         html.append("</style></head><body>")
+        print("Styling info: ", html)
         lines = content.split("\n")
         i = 0
         in_table = False
@@ -783,22 +803,23 @@ class MainFrame(wx.Frame):
             i += 1
 
         html.append("</body></html>")
-        # print(html)
+        print("".join(html))
+        # #print(html)
         return "".join(html)
 
     def on_link_clicked(self, event):
         link = event.GetURL()
         if link.startswith("data:"):
             return
-        print(f"Link clicked: {link}")
+        #print(f"Link clicked: {link}")
         if link.startswith("internal:"):
             name = link[len("internal:") :]
             self.net.send_message(self.net.build_message("GETSUMMARYLINK", [name]))
-            print("Sent get summary message")
+            #print("Sent get summary message")
             cont = base64.b64decode(
                 self.net.get_message_params(self.net.recv_message())[0]
             ).decode()
-            print("THE CONTENT: ", cont)
+            #print("THE CONTENT: ", cont)
             self.editor.SetValue(cont)
             self.prev_content = cont
             self.update_html_view()
@@ -817,11 +838,11 @@ class MainFrame(wx.Frame):
 
     def on_summarize(self, event):
         selected = self.editor.GetStringSelection()
-        print("Currently selecting : ", selected)
+        #print("Currently selecting : ", selected)
         self.net.send_message(self.net.build_message("SUMMARIZE", [selected]))
 
     def show_export_menu(self, event):
-        print("Showing export menu")
+        #print("Showing export menu")
         menu = wx.Menu()
         for label, handler in [
             ("Markdown", self.export_as_markdown),
@@ -835,7 +856,7 @@ class MainFrame(wx.Frame):
         self.PopupMenu(menu)
 
     def show_import_menu(self, event):
-        print("Showing import menu")
+        #print("Showing import menu")
         menu = wx.Menu()
         for label, handler in [
             ("Markdown", self.import_from_markdown),
@@ -936,20 +957,20 @@ class MainFrame(wx.Frame):
             # might be better to create the handler dynamically here, rather than have all state in the class
 
     def export_as_markdown(self, event):
-        print("Exporting as Markdown")
+        #print("Exporting as Markdown")
         self.export_file("md")
 
     def export_as_pdf(self, event):
-        print("Exporting as PDF")
+        #print("Exporting as PDF")
         self.export_file("pdf")
 
     def export_as_html(self, event):
-        print("Exporting as HTML")
+        #print("Exporting as HTML")
         # For HTML, we could directly use our HTML content
         self.export_file("html", use_html=True)
 
     def export_as_txt(self, event):
-        print("Exporting as TXT")
+        #print("Exporting as TXT")
         self.export_file("txt")
 
     def export_file(self, ext, use_html=False):
@@ -978,7 +999,7 @@ class MainFrame(wx.Frame):
 
             return pdfkit.from_string(self.html_content, path)
         formated_content = self.format_content(self.editor.GetValue(), ext)
-        print("Writing: ", formated_content)
+        #print("Writing: ", formated_content)
         with open(path, "w") as f:
             f.write(formated_content)
         # with open(path, "wb") as f:
@@ -989,8 +1010,8 @@ class MainFrame(wx.Frame):
 
     def format_content(self, content, ext):
         if ext.lower() == "html":
-            print("HTML")
-            print(self.html_content)
+            #print("HTML")
+            #print(self.html_content)
             return self.html_content
         # elif ext == "md" or ext == "txt":
         #     return content
@@ -999,7 +1020,7 @@ class MainFrame(wx.Frame):
         return content
 
     def import_from_markdown(self, event):
-        print("Importing from Markdown")
+        #print("Importing from Markdown")
         file_text_content = self.get_file_content("md")
         if not file_text_content:
             return
@@ -1011,7 +1032,7 @@ class MainFrame(wx.Frame):
         # Implementation would go here
 
     def import_from_html(self, event):
-        print("Importing from HTML")
+        #print("Importing from HTML")
         # Implementation would go here
         file_text_content = self.get_file_content("html")
         if not file_text_content:
@@ -1022,7 +1043,7 @@ class MainFrame(wx.Frame):
         return
 
     def import_from_txt(self, event):
-        print("Importing from TXT")
+        #print("Importing from TXT")
         # Implementation would go here
         file_text_content = self.get_file_content("txt")
         if not file_text_content:
@@ -1079,7 +1100,7 @@ class MainFrame(wx.Frame):
         carousel.Destroy()
 
     def on_save(self, event):
-        print("Saving")
+        #print("Saving")
 
         # Prompt the user for a title
         dialog = wx.TextEntryDialog(
@@ -1088,7 +1109,7 @@ class MainFrame(wx.Frame):
         if dialog.ShowModal() == wx.ID_OK:
             title = dialog.GetValue()
         else:
-            print("Save canceled by user.")
+            #print("Save canceled by user.")
             dialog.Destroy()
             return  # Exit if the user cancels the input
 
@@ -1116,11 +1137,10 @@ class MainFrame(wx.Frame):
                 dic = pickle.loads(base64.b64decode(params[0]))
                 cont = dic["data"].decode()
                 dicty = {"font": dic["summ"].font}
-
                 self.editor.SetValue(cont)
                 self.prev_content = cont
-
                 dicty["font"] = dicty.get("font", "Arial")
+                
                 if dicty['font'] and dicty["font"].startswith("http"):
                     self.current_font = {
                         "name": dicty["font"],
@@ -1128,28 +1148,54 @@ class MainFrame(wx.Frame):
                         "from_url": True,
                     }
                 else:
+                    # Clean up the font name - remove any @ symbol or pipe characters
+                    clean_font_name = dicty.get("font", "Arial").replace('@', '').replace('|', '')
                     self.current_font = {
-                        "name": dicty.get("font", "Arial") if dicty.get("font") else "Arial",
+                        "name": clean_font_name if clean_font_name else "Arial",
                         "url": None,
                         "from_url": False,
                     }
+                    
+                try:
+                    font = wx.Font(
+                        12,
+                        wx.FONTFAMILY_DEFAULT,
+                        wx.FONTSTYLE_NORMAL,
+                        wx.FONTWEIGHT_NORMAL,
+                        False,
+                        self.current_font["name"],
+                    )
+                    self.editor.SetFont(font)
+                except Exception as font_error:
+                    print(f"Error setting font: {font_error}")
+                    # Fallback to default font
+                    default_font = wx.Font(
+                        12,
+                        wx.FONTFAMILY_DEFAULT,
+                        wx.FONTSTYLE_NORMAL,
+                        wx.FONTWEIGHT_NORMAL,
+                        False,
+                        "Arial"
+                    )
+                    self.editor.SetFont(default_font)
+                    
+                print("Font info: ", self.current_font)
                 if hasattr(self, "carousel") and self.carousel:
                     self.carousel.Close()
-                else:
-                    print("No carousel to close")
+                # else:
+                    #print("No carousel to close")
                 # self.update_doc(None)
-                # print("Sleeping 5 secs")
+                # #print("Sleeping 5 secs")
                 # time.sleep(5)
                 self.update_timer.Start(1000)  # Check every 3 seconds
                 self.update_enable_timer.Start(3000)
-
-            except Exception as e:
-                print("Error: ", e)
+            except Exception as _:
+                #print("Error: ", e)
+                traceback.print_exc()
                 wx.MessageBox(
                     "Error: Could not retrieve summary content.",
                     "Error",
                     wx.OK | wx.ICON_ERROR,
                 )
                 self.Close()
-
         wx.CallAfter(process_summary)
