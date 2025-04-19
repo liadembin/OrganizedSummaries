@@ -1,5 +1,3 @@
-from dbManager import Summary, DbManager
-from OCRManager import ExtractText
 import datetime
 import json
 from typing import Callable
@@ -13,6 +11,10 @@ import sys
 import time
 from threading import Thread
 import base64
+
+
+from dbManager import Summary, DbManager
+from OCRManager import ExtractText
 
 # from dbManager import DbManager
 import pickle
@@ -126,10 +128,18 @@ def handle_save(db_manager) -> Callable:
             print("NOT logged in")
             net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
             return True
+        if title == "":
+            sid = -1
+            for k, v in ids_per_summary_id.items():
+                if db_manager.get_id_per_sock(net.sock) in v:
+                    sid = k
+                    break
+            db_manager.update_summary(sid, summary, font)
 
-        db_manager.insert_summary(
-            title, summary, db_manager.get_id_per_sock(net.sock), font
-        )
+        else:
+            db_manager.insert_summary(
+                title, summary, db_manager.get_id_per_sock(net.sock), font
+            )
         net.send_message(net.build_message("SAVE_SUCCESS", []))
         return False
 
@@ -370,26 +380,28 @@ def handle_get_summary_by_link(db_manager) -> Callable:
             return True
         print("Checking db")
         summ: Summary = db_manager.get_summary_by_link(link)
-        print("Sending summary: ", summ)
+        # print("Sending summary: ", summ)
         if summ is None:
             net.send_message(net.build_message("ERROR", ["SUMMARY NOT FOUND"]))
             return True
-        
-        with open(summ.path_to_summary, "rb") as f:
-            data = f.read()
-        print("Data: ", data)
-        net.send_message(
-            net.build_message("TAKESUMMARY", [base64.b64encode(data).decode()])
-        )
-        for key, value in ids_per_summary_id.items():
-            if id in value:
-                value.remove(id)
-                break
-        if id not in ids_per_summary_id:
-            ids_per_summary_id[summ.id] = []
-            spawn_summary_thread(summ, id, net, summ.id)
-        ids_per_summary_id[summ.id].append(id)
 
+        # with open(summ.path_to_summary, "rb") as f:
+        #     data = f.read()
+        # print("Data: ", data)
+        net.send_message(
+            # net.build_message("TAKESUMMARY", [base64.b64encode(data).decode()])
+            # net.build_message("TAKESUMMARY",[base64.b64encode(pickle.dumps({"data": data, "summ": summ})).decode() ])
+            net.build_message("TAKESUMMARYLINK", [str(summ.id)])
+        )
+        # for key, value in ids_per_summary_id.items():
+        #     if id in value:
+        #         value.remove(id)
+        #         break
+        # if id not in ids_per_summary_id:
+        #     ids_per_summary_id[summ.id] = []
+        #     spawn_summary_thread(summ, id, net, summ.id)
+        # ids_per_summary_id[summ.id].append(id)
+        #
         return False
 
     return handle_inner
@@ -514,6 +526,29 @@ def handle_share_summary(db_manager: DbManager) -> Callable:
     return handle_inner
 
 
+def handle_get_graph(db_manager):
+    def handle_inner(*_, net: networkManager.NetworkManager) -> bool:
+        id = db_manager.get_id_per_sock(net.sock)
+        if id == -1:
+            print("NOT logged in")
+            net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
+            return True
+        for k, v in ids_per_summary_id.items():
+            if id in v:
+                sid = k
+                break
+        print("Getting graph for: ", sid)
+        graph = db_manager.get_graph(sid)
+        net.send_message(
+            net.build_message(
+                "TAKEGRAPH", [base64.b64encode(pickle.dumps(graph)).decode()]
+            )
+        )
+        return False
+
+    return handle_inner
+
+
 def thread_main(sock, addr, crypt):
     net: networkManager.NetworkManager = handle_key_exchange(sock, crypt)
     net.set_lock(threading.Lock())
@@ -552,6 +587,7 @@ def thread_main(sock, addr, crypt):
     # net.add_handler("GET_DOCUMENT_CHANGES", handle_get_document_changes(db_manager))
     net.add_handler("UPDATEDOC", handle_update_document(db_manager))
     net.add_handler("SHARESUMMARY", handle_share_summary(db_manager))
+    net.add_handler("GETGRAPH", handle_get_graph(db_manager))
     net_per_sock[sock] = net
     sock.settimeout(0.5)
     while True:
@@ -688,7 +724,7 @@ def summary_thread(sid, db_manager):
                     print("Final content: ", doc_content)
 
                     # Uncomment if you want to save to database after each batch of changes
-                    db_manager.save_summary(sid, doc_content)
+                    # db_manager.save_summary(sid, doc_content)
 
                     # Remove processed changes
                     del doc_changes[sid][change_id]
@@ -696,7 +732,7 @@ def summary_thread(sid, db_manager):
                     # Send updates to all connected users
                     print("Sending changes to all users")
 
-            # Send updates to all connected users (do this outside the lock to avoid holding it too long)
+                # Send updates to all connected users (do this outside the lock to avoid holding it too long)
                 print("Connected ids: ", ids_per_summary_id[sid])
                 print("ill send to both: ", doc_content)
                 for id in ids_per_summary_id[sid]:
@@ -709,7 +745,13 @@ def summary_thread(sid, db_manager):
                         net.send_message(
                             net.build_message(
                                 "TAKEUPDATE",
-                                [base64.b64encode(json.dumps({"doc_content":doc_content}).encode()).decode()],
+                                [
+                                    base64.b64encode(
+                                        json.dumps(
+                                            {"doc_content": doc_content}
+                                        ).encode()
+                                    ).decode()
+                                ],
                             )
                         )
                     except Exception as e:
@@ -729,7 +771,7 @@ def summary_thread(sid, db_manager):
         print("Summary thread terminated for summary ID:", sid)
         # Save any pending changes before exiting
         try:
-            # db_manager.save_summary(sid, doc_content)
+            db_manager.save_summary(sid, doc_content)
             print(f"Final document state saved for summary {sid}")
         except Exception as e:
             print(f"Failed to save final state: {e}")
@@ -754,14 +796,14 @@ def spawn_summary_thread(summ, id, net, sid):
     # thread.join()
     threads.append(thread)
 
-import copy
-def main(sock, crypt,t1):
+
+def main(sock, crypt, t1):
     sock.listen(5)
     global threads
     threads = []
     while True:
-        t2 = time.time() 
-        print("Starting up time: ", t2-t1)
+        t2 = time.time()
+        print("Starting up time: ", t2 - t1)
         print("Listening....")
         client_sock, addr = sock.accept()
         print(f"Connection from {addr}")
@@ -775,6 +817,7 @@ def main(sock, crypt,t1):
 
 
 if __name__ == "__main__":
+    print("Done importing")
     t1 = time.time()
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 12345
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -793,4 +836,4 @@ if __name__ == "__main__":
     #     else RSA.generate(2048)
     # )
 
-    main(sock, rsa_key,t1)
+    main(sock, rsa_key, t1)

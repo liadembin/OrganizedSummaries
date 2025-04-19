@@ -6,7 +6,8 @@ import sys
 
 # import logging
 from typing import List, Dict
-from datetime import datetime
+
+# from datetime import datetime
 from mysql.connector import Error
 from unittest.mock import Mock, patch, MagicMock
 import pytest
@@ -14,11 +15,17 @@ import mysql.connector
 from mysql.connector import MySQLConnection, Error
 import datetime
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional
+from typing import Tuple
 import hashlib
 import uuid
 import base64
 from mysql.connector.pooling import PooledMySQLConnection
+import re
+import pickle
+import datetime
+from mysql.connector import Error, MySQLConnection, pooling
+from mysql.connector.pooling import PooledMySQLConnection
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -28,37 +35,50 @@ class User:
     hashedPass: str
     salt: str
     isPublic: bool
-    createTime: datetime.datetime = field(default_factory=datetime.datetime.now)
-    # updateTime: datetime.datetime = field(
-    #   default_factory=datetime.datetime.now)
+    createTime: datetime.datetime = None
+
+    def __post_init__(self):
+        if self.createTime is None:
+            self.createTime = datetime.datetime.now()
 
 
+# {"username": "u1", "position": 1, "content": "hello", "type": "insert"}
 @dataclass
 class Summary:
     id: int
     ownerId: int
     shareLink: str
     path_to_summary: str
-    content: Optional[str] = None
-    font: Optional[str] = "Arial"
-    createTime: datetime.datetime = field(default_factory=datetime.datetime.now)
-    updateTime: datetime.datetime = field(default_factory=datetime.datetime.now)
+    font: str
+    createTime: Optional[datetime.datetime] = None
+    updateTime: Optional[datetime.datetime] = None
+    content: str = ""
 
 
-# {"username": "u1", "position": 1, "content": "hello", "type": "insert"}
+@dataclass(eq=True, frozen=False)
+class Node:
+    id: int
+    name: str
+    type: str
+    children: List["Node"] = field(default_factory=list, compare=False, hash=False)
+
+    def __hash__(self):
+        return hash((self.id, self.name, self.type))
+
+
 class DbManager:
     def __init__(self):
         self.connection: Optional[MySQLConnection | PooledMySQLConnection] = None
         self.cursor: Any = None
-        self.id_per_sock = {}
+        self.id_per_sock: Dict[Any, int] = {}
 
-    def get_is_sock_logged(self, sock):
+    def get_is_sock_logged(self, sock: Any) -> bool:
         return sock in self.id_per_sock
 
-    def get_id_per_sock(self, sock):
+    def get_id_per_sock(self, sock: Any) -> int:
         return self.id_per_sock.get(sock, -1)
 
-    def connect_to_db(self, db_config) -> None:
+    def connect_to_db(self, db_config: Dict[str, Any]) -> None:
         """Connect to MySQL database."""
         try:
             self.connection = mysql.connector.connect(**db_config)
@@ -67,7 +87,7 @@ class DbManager:
         except Error as e:
             print(f"Error connecting to database: {e}")
 
-    def get_id_by_username(self, username) -> int:
+    def get_id_by_username(self, username: str) -> int:
         query = "SELECT id FROM User WHERE username = %s"
         self.cursor.execute(query, (username,))
         result = self.cursor.fetchone()
@@ -76,17 +96,9 @@ class DbManager:
     def insert_user(self, username: str, password_hash: str, salt: bytes) -> bool:
         """Insert a new user into the database."""
         try:
-            # query = """
-            #     INSERT INTO `User` (username, hashedPass, salt, isPublic)
-            #     VALUES ( ?, ?, ?, 0)
-            # """
-            # self.cursor.execute(
-            #     query,
-            #     (username, password_hash, base64.b64encode(salt).decode()),
-            # )
             query = """
-                insert into user (username, hashedPass, salt, isPublic)
-                values (%s, %s, %s, %s)
+                INSERT INTO user (username, hashedPass, salt, isPublic)
+                VALUES (%s, %s, %s, %s)
             """
             self.cursor.execute(
                 query, (username, password_hash, base64.b64encode(salt).decode(), 0)
@@ -186,6 +198,7 @@ class DbManager:
                 ),
             )
             user_data = self.cursor.fetchone()
+            print("User data: ", user_data)
             if user_data:
                 return User(**user_data)
             return None
@@ -210,6 +223,69 @@ class DbManager:
             print(f"Error updating password: {e}")
             return False
 
+    def _extract_links(self, content: str) -> Tuple[str, Dict[str, str]]:
+        """
+        Extract links from content in the format "###link {name}" ending with a newline.
+        Returns processed content and dictionary of {link_title: link_id}.
+        """
+        # Pattern to match ###link {name} ending with a newline
+        pattern = r"###link\s+([^\n]+)\n"
+        links = {}
+
+        # Find all links
+        matches = re.findall(pattern, content)
+        print("matches for links: ", matches)
+        # Process each link
+        for match in matches:
+            link_title = match.strip()
+            # Get the summary ID based on the title
+            summary_id = self._get_summary_id_by_title(link_title)
+            print(f"sid: {summary_id} for link: {link_title}")
+            if summary_id:
+                links[link_title] = summary_id
+
+        return content, links
+
+    def _get_summary_id_by_title(self, title: str) -> Optional[int]:
+        """Get summary ID by title."""
+        try:
+            query = "SELECT id FROM Summary WHERE shareLink = %s"
+            self.cursor.execute(query, (title,))
+            result = self.cursor.fetchone()
+            return result["id"] if result else None
+        except Error as e:
+            print(f"Error fetching summary ID by title: {e}")
+            return None
+
+    def _save_links(self, source_id: int, links: Dict[str, str]) -> None:
+        """Save links between summaries in the database."""
+        try:
+            # Create links table if it doesn't exist
+            # create_table_query = """
+            #     CREATE TABLE IF NOT EXISTS links (
+            #         id INT AUTO_INCREMENT PRIMARY KEY,
+            #         source_summary_id INT NOT NULL,
+            #         target_summary_id INT NOT NULL,
+            #         link_text VARCHAR(255),
+            #         FOREIGN KEY (source_summary_id) REFERENCES Summary(id) ON DELETE CASCADE,
+            #         FOREIGN KEY (target_summary_id) REFERENCES Summary(id) ON DELETE CASCADE
+            #     )
+            # """
+            # self.cursor.execute(create_table_query)
+
+            # Insert links
+            for link_text, target_id in links.items():
+                query = """
+                    INSERT INTO links (source_summary_id, target_summary_id, link_text)
+                    VALUES (%s, %s, %s)
+                """
+                self.cursor.execute(query, (source_id, target_id, link_text))
+
+            self.connection.commit()
+            print(f"Saved {len(links)} links for summary {source_id}")
+        except Error as e:
+            print(f"Error saving links: {e}")
+
     def insert_summary(
         self, title: str, content: str, created_by: int, font: str
     ) -> int:
@@ -218,49 +294,109 @@ class DbManager:
             # Get the current maximum ID
             self.cursor.execute("SELECT MAX(id) FROM Summary")
             max_id_before = self.cursor.fetchone()["MAX(id)"] or 0
+
             # Create directory for user if it doesn't exist
             user_dir = os.path.join("data", str(created_by))
             os.makedirs(user_dir, exist_ok=True)
+
             # Generate unique filename
             base_filename = f"{title.replace(' ', '_')}.md"
             filepath = os.path.join(user_dir, base_filename)
+
             # Check and modify filename if it already exists
             counter = 1
             while os.path.exists(filepath):
                 filename = f"{title.replace(' ', '_')}({counter}).md"
                 filepath = os.path.join(user_dir, filename)
                 counter += 1
+
+            # Process content to extract links
+            processed_content, links = self._extract_links(content)
+
             # Write content to file
             with open(filepath, "w", encoding="utf-8") as f:
-                f.write(content)
+                f.write(processed_content)
+
             # Insert summary record
             query = """
-                INSERT INTO Summary (ownerId, shareLink, path_to_summary,font)
-                VALUES (%s, %s, %s,%s)
+                INSERT INTO Summary (ownerId, shareLink, path_to_summary, font)
+                VALUES (%s, %s, %s, %s)
             """
             self.cursor.execute(query, (created_by, title, filepath, font))
             self.connection.commit()
+
             # Get the maximum ID after insertion
             self.cursor.execute("SELECT MAX(id) FROM Summary")
             max_id_after = self.cursor.fetchone()["MAX(id)"] or 0
 
-            return max_id_after if max_id_after > max_id_before else -1
+            new_summary_id = max_id_after if max_id_after > max_id_before else -1
+
+            # Save links if insertion was successful
+            if new_summary_id > 0 and links:
+                self._save_links(new_summary_id, links)
+
+            return new_summary_id
 
         except (Error, IOError) as e:
             print(f"Error inserting summary: {e}")
             return -1
-    def save_summary(self,sid, content):
+
+    def save_summary(self, sid: int, content: str) -> bool:
+        """Save updated summary content and process links."""
         try:
             query = "SELECT path_to_summary FROM Summary WHERE id = %s"
             self.cursor.execute(query, (sid,))
             result = self.cursor.fetchone()
+            if not result:
+                return False
+
             filepath = result["path_to_summary"]
+
+            # Process content to extract and update links
+            processed_content, links = self._extract_links(content)
+
             with open(filepath, "w", encoding="utf-8") as f:
-                f.write(content)
+                f.write(processed_content)
+
+            # Update links for this summary
+            self._update_links(sid, links)
+
             return True
         except (Error, IOError) as e:
             print(f"Error saving summary: {e}")
             return False
+
+    def _update_links(self, source_id: int, links: Dict[str, str]) -> None:
+        """Update links between summaries in the database."""
+        try:
+            # First delete all existing links from this source
+            delete_query = """
+                DELETE FROM links WHERE source_summary_id = %s
+            """
+            self.cursor.execute(delete_query, (source_id,))
+
+            # Then insert new links
+            if links:
+                self._save_links(source_id, links)
+
+            self.connection.commit()
+        except Error as e:
+            print(f"Error updating links: {e}")
+
+    def _delete_links(self, summary_id: str) -> None:
+        """Delete all links associated with a summary."""
+        try:
+            # Delete links where this summary is the source
+            query1 = "DELETE FROM links WHERE source_summary_id = %s"
+            self.cursor.execute(query1, (summary_id,))
+
+            # Delete links where this summary is the target
+            query2 = "DELETE FROM links WHERE target_summary_id = %s"
+            self.cursor.execute(query2, (summary_id,))
+
+            self.connection.commit()
+        except Error as e:
+            print(f"Error deleting links: {e}")
 
     def get_summary(self, summary_id: str) -> Optional[Summary]:
         """Get summary by ID, including file contents."""
@@ -268,7 +404,7 @@ class DbManager:
             query = "SELECT * FROM Summary WHERE id = %s"
             self.cursor.execute(query, (summary_id,))
             summary_data = self.cursor.fetchone()
-            print(summary_data)
+
             if summary_data:
                 # Read file contents if path exists
                 if summary_data["path_to_summary"] and os.path.exists(
@@ -287,14 +423,12 @@ class DbManager:
             return None
 
     def get_summary_by_link(self, link: str) -> Optional[Summary]:
+        """Get summary by share link."""
         try:
             query = "SELECT * FROM Summary WHERE LOWER(shareLink) = LOWER(%s)"
             self.cursor.execute(query, (link,))
-            # print the query being run to check if it is correct
-
             summary_data = self.cursor.fetchone()
 
-            print(summary_data)
             if summary_data:
                 # Read file contents if path exists
                 if summary_data["path_to_summary"] and os.path.exists(
@@ -312,9 +446,7 @@ class DbManager:
             print(f"Error getting summary: {e}")
             return None
 
-    def update_summary(
-        self, summary_id: str, share_link: str, content: str = None
-    ) -> bool:
+    def update_summary(self, summary_id: str, content: str, font=None) -> bool:
         """Update a summary's shareLink and optionally its content."""
         try:
             # Fetch current summary to get existing path
@@ -329,12 +461,18 @@ class DbManager:
 
             # Update file content if provided
             if content and filepath:
+                # Process content to extract and update links
+                processed_content, links = self._extract_links(content)
+
                 with open(filepath, "w", encoding="utf-8") as f:
-                    f.write(content)
+                    f.write(processed_content)
+
+                # Update links for this summary
+                self._update_links(int(summary_id), links)
 
             # Update database record
-            update_query = "UPDATE Summary SET shareLink = %s WHERE id = %s"
-            self.cursor.execute(update_query, (share_link, summary_id))
+            update_query = "UPDATE Summary SET font = %s WHERE id = %s"
+            self.cursor.execute(update_query, (font, summary_id))
             self.connection.commit()
 
             return True
@@ -350,6 +488,9 @@ class DbManager:
             query = "SELECT path_to_summary FROM Summary WHERE id = %s"
             self.cursor.execute(query, (summary_id,))
             result = self.cursor.fetchone()
+
+            # Delete links associated with this summary
+            self._delete_links(summary_id)
 
             # Delete from database
             delete_query = "DELETE FROM Summary WHERE id = %s"
@@ -382,9 +523,9 @@ class DbManager:
             return True
         except Error as e:
             print(f"Error inserting event: {e}")
-            return False  # rewrite to use Event class
+            return False
 
-    def get_events(self, user_id: int) -> List[Dict]:
+    def get_events(self, user_id: int) -> List[Dict[str, Any]]:
         """Get all events for a user."""
         try:
             query = "SELECT * FROM Event WHERE userid = %s ORDER BY event_date ASC"
@@ -497,7 +638,6 @@ class DbManager:
             query = "SELECT * FROM Summary WHERE ownerId = %s"
             self.cursor.execute(query, (user_id,))
             summaries = self.cursor.fetchall()
-            print(summaries)
             return [Summary(**summar) for summar in summaries]
         except Error as e:
             print(f"Error fetching all summaries by user: {e}")
@@ -517,6 +657,84 @@ class DbManager:
             return [Summary(**su) for su in summaries]
         except Error as e:
             print(f"Error fetching summaries user can access: {e}")
+            return []
+
+    def get_graph(self, summary_id: int) -> List[Node]:
+        """
+        Build a graph representation for a summary and its connections.
+        Returns a list of Node objects representing the graph structure.
+        """
+        try:
+            # Get the current summary
+            query = "SELECT id, shareLink FROM Summary WHERE id = %s"
+            self.cursor.execute(query, (summary_id,))
+            current_summary = self.cursor.fetchone()
+
+            if not current_summary:
+                return []
+
+            # Initialize the graph with the current summary as root
+            root_node = Node(
+                id=current_summary["id"],
+                name=current_summary["shareLink"],
+                type="summary",
+                children=[],
+            )
+
+            # Find parent summaries (summaries that link to this one)
+            parent_query = """
+                SELECT s.id, s.shareLink
+                FROM Summary s
+                JOIN links l ON s.id = l.source_summary_id
+                WHERE l.target_summary_id = %s
+            """
+            self.cursor.execute(parent_query, (summary_id,))
+            parents = self.cursor.fetchall()
+
+            # Find child summaries (summaries that this one links to)
+            child_query = """
+                SELECT s.id, s.shareLink
+                FROM Summary s
+                JOIN links l ON s.id = l.target_summary_id
+                WHERE l.source_summary_id = %s
+            """
+            self.cursor.execute(child_query, (summary_id,))
+            children = self.cursor.fetchall()
+
+            # Add children to the root node
+            for child in children:
+                child_node = Node(
+                    id=child["id"], name=child["shareLink"], type="child", children=[]
+                )
+                root_node.children.append(child_node)
+
+            # Create parent nodes
+            parent_nodes = []
+            for parent in parents:
+                parent_node = Node(
+                    id=parent["id"],
+                    name=parent["shareLink"],
+                    type="parent",
+                    children=[root_node],  # The current node is a child of each parent
+                )
+                parent_nodes.append(parent_node)
+
+            # Combine into a single result
+            result = [root_node]
+            result.extend(parent_nodes)
+
+            # Optionally save the graph structure using pickle
+            graph_dir = "data/graphs"
+            os.makedirs(graph_dir, exist_ok=True)
+            graph_path = os.path.join(graph_dir, f"graph_{summary_id}.pkl")
+
+            with open(graph_path, "wb") as f:
+                pickle.dump(result, f)
+
+            return result
+
+        except (Error, IOError) as e:
+            print(f"Error generating graph: {e}")
             return []
 
 

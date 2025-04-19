@@ -1,14 +1,19 @@
-from transformers import pipeline
-import nltk
+# import nltk
+print("Got transformers")
 from sumy.utils import get_stop_words
 from sumy.nlp.stemmers import Stemmer
 from sumy.summarizers.luhn import LuhnSummarizer
 from sumy.nlp.tokenizers import Tokenizer
 from sumy.parsers.plaintext import PlaintextParser
+
+print("Got sumy")
 import pytesseract
+
+print("Got pytesseract")
 from PIL import Image
 from sumy.summarizers.lsa import LsaSummarizer
 
+print("Got lsa")
 # nltk.download("punkt")
 
 
@@ -28,6 +33,8 @@ def summarize_paragraph(paragraph: str, sentences_count=5) -> str:
     if HAS_SHITTONE_OF_RAM:
         global summarizer
         if summarizer is None:
+            from transformers import pipeline
+
             summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
         return summarizer(
             paragraph,

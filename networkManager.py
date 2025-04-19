@@ -82,7 +82,7 @@ class NetworkManager:
         Receive a message from the socket connection and handle it with the appropriate handler function.
         """
         if not self.has_received():
-            print("No message received.")
+            # print("No message received.")
             return
         message = self.recv_message()
         code = self.get_message_code(message)

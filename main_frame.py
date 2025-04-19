@@ -1,15 +1,9 @@
-import tempfile
-import shutil
 import datetime
-from typing import Dict
 import wx
-from wx import adv
 from networkManager import NetworkManager
 import base64
 import pickle
 import os
-import urllib
-import urllib.request
 import wx.html2
 import wx.adv
 import pdfkit
@@ -17,6 +11,11 @@ import time
 import json
 import difflib
 import threading
+import unicodedata
+from GraphDial import GraphDialog
+from EventDiag import EventsDialog
+from FontDiag import FontSelectorDialog
+from SummaryCarousell import SummaryCarousel
 
 
 class MainFrame(wx.Frame):
@@ -56,7 +55,7 @@ class MainFrame(wx.Frame):
         font_button.Bind(wx.EVT_BUTTON, self.on_font_selector)
         save_button = wx.Button(panel, label="Save")
         save_button.Bind(wx.EVT_BUTTON, self.on_save)
-
+        graph_button = wx.Button(panel, label="See graph")
         hbox_top.Add(
             self.username_label,
             proportion=1,
@@ -67,6 +66,8 @@ class MainFrame(wx.Frame):
         hbox_top.Add(see_linked_button, flag=wx.ALL, border=5)
         hbox_top.Add(browse_data_button, flag=wx.ALL, border=5)
         hbox_top.Add(font_button, flag=wx.ALL, border=5)
+        hbox_top.Add(graph_button, flag=wx.ALL, border=5)
+        graph_button.Bind(wx.EVT_BUTTON, self.on_graph)
         add_event_button = wx.Button(panel, label="Add Event")
         add_event_button.Bind(wx.EVT_BUTTON, self.on_add_event)
         hbox_top.Add(add_event_button, flag=wx.ALL, border=5)
@@ -151,11 +152,15 @@ class MainFrame(wx.Frame):
         self.carousel = None
         self.events_dialog = None
 
+    def on_graph(self, event):
+        print("Getting graph")
+        self.net.send_message(self.net.build_message("GETGRAPH", []))
+
     def enable_listen(self, event):
         # self.awaiting_update = True
         pass
 
-    def handle_error(self, explaination, net):
+    def handle_error(self, _, explaination, net):
         # wx.MessageBox(f"Error: {explaination}", "Error", wx.OK | wx.ICON_ERROR)
         wx.CallAfter(
             wx.MessageBox, f"Error: {explaination}", "Error", wx.OK | wx.ICON_ERROR
@@ -179,7 +184,8 @@ class MainFrame(wx.Frame):
             self.carousel = SummaryCarousel(summaries, self.net, self)
             self.carousel.ShowModal()
             self.carousel.Destroy()
-            print("Set up carousel")
+            print("Removed caroussle")
+
         wx.CallAfter(show_summaries)
 
     def handle_take_events(self, *params, net):
@@ -214,10 +220,50 @@ class MainFrame(wx.Frame):
 
     def on_file_content(self, *params, net):
         def update_editor():
-            self.editor.AppendText(params[0])
+            self.editor.AppendText(params[1])
             self.update_html_view()
 
         wx.CallAfter(update_editor)
+
+    def handle_graph(self, _, *params, net):
+        """Handle graph data received from server"""
+        if not params:
+            wx.CallAfter(
+                wx.MessageBox, "No graph data received", "Error", wx.OK | wx.ICON_ERROR
+            )
+            return
+
+        try:
+            # Deserialize the graph data
+            graph_data = pickle.loads(base64.b64decode(params[0]))
+
+            # Make sure we display something even if the list is empty
+            if not graph_data:
+                wx.CallAfter(
+                    wx.MessageBox,
+                    "No summaries found in the graph. Try creating or sharing more summaries.",
+                    "Empty Graph",
+                    wx.OK | wx.ICON_INFORMATION,
+                )
+                return
+
+            def show_graph():
+                # Create and show the graph dialog
+                graph_dialog = GraphDialog(self, graph_data, self.net)
+                if graph_dialog.ShowModal() == wx.ID_OK:
+                    # If user selected a node and closed with "View", content is already requested
+                    pass
+                graph_dialog.Destroy()
+
+            wx.CallAfter(show_graph)
+
+        except Exception as e:
+            wx.CallAfter(
+                wx.MessageBox,
+                f"Error processing graph data: {str(e)}",
+                "Error",
+                wx.OK | wx.ICON_ERROR,
+            )
 
     def on_summary_recived(self, *params, net):
         def update_summary():
@@ -240,22 +286,29 @@ class MainFrame(wx.Frame):
             "TAKEEVENTS": self.handle_take_events,
             "INFO": self.handle_info,
             "TAKEUPDATE": self.take_update,
-            "SHARE_SUCCESS": lambda a, *params, net: print("Shared successfully. ", params),
+            "SHARE_SUCCESS": lambda a, *params, net: print(
+                "Shared successfully. ", params
+            ),
             "TAKESUMMARY": self.handle_recived_summary,
+            "TAKEGRAPH": self.handle_graph,
+            "TAKESUMMARYLINK": self.handle_take_link,
         }
-        
+
         self.net.add_handlers(self.handlers)
         self.net.sock.settimeout(0.5)
         while True:
             try:
                 # Non-blocking receive with better error management
                 found_any = self.net.recv_handle_args(self)
-                
+
                 if not found_any:
                     time.sleep(0.1)  # Reduced sleep time
 
             except Exception as e:
                 print(f"Listening Thread Error: {e}")
+                import traceback
+
+                traceback.print_exc()
                 time.sleep(1)  # Prevent tight error loop
 
     def share_summary(self, event):
@@ -332,6 +385,7 @@ class MainFrame(wx.Frame):
         panel.SetSizer(vbox)
 
         dialog.ShowModal()
+
     def is_update_throttled(self):
         """Check if an update should be throttled based on time since last update"""
         current_time = time.time()
@@ -339,84 +393,103 @@ class MainFrame(wx.Frame):
             return True
         self.last_update_time = current_time
         return False
+
+    def normalize(self, text):
+        text = unicodedata.normalize("NFC", text)  # Normalize unicode
+        text = text.replace("\r\n", "\n").replace("\r", "").rstrip()
+        return text
+
     def update_doc(self, event):
         # if self.awaiting_update:
         #     return print("Awaiting update, not sending another")
         if self.is_proccesing.is_set():
             return print("Is proccesing, not sending another")
         if self.is_update_throttled():
-            return 
+            return
         with self.update_lock:
-            old_text = self.prev_content
-            new_text = self.editor.GetValue()
-            
+            # old_text = self.prev_content
+            # new_text = self.editor.GetValue()
+            old_text = self.normalize(
+                self.prev_content
+            )  # self.prev_content.replace("\r\n", "\n").rstrip()
+            new_text = self.normalize(
+                self.editor.GetValue()
+            )  # self.editor.GetValue().replace("\r\n", "\n").rstrip()
+            print(f"Old Text: {repr(old_text[:50])}")
+            print(f"New Text: {repr(new_text[:50])}")
+
             # Detect if content has actually changed
             if old_text == new_text:
+                print("No Changes")
                 return
-            
+
             # Use advanced diff algorithm
             matcher = difflib.SequenceMatcher(None, old_text, new_text)
             changes = []
 
             for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-                if tag == 'equal':
+                if tag == "equal":
                     continue
 
                 change_type = {
-                    'replace': 'UPDATE', 
-                    'delete': 'DELETE', 
-                    'insert': 'INSERT'
+                    "replace": "UPDATE",
+                    "delete": "DELETE",
+                    "insert": "INSERT",
                 }.get(tag, tag)
-                
-                content = new_text[j1:j2] if tag in ['replace', 'insert'] else ''
-                
-                changes.append({
-                    'cord': [i1, i2], 
-                    'type': change_type, 
-                    'cont': content
-                })
-            
+
+                content = new_text[j1:j2] if tag in ["replace", "insert"] else ""
+                if content == "" and tag != "delete":
+                    print("Not a real change.")
+                    continue
+                changes.append({"cord": [i1, i2], "type": change_type, "cont": content})
+
             # Only send update if there are meaningful changes
             if changes:
+                print("Found these changes: ", changes)
                 payload = json.dumps({"changes": changes})
                 try:
-                    self.net.send_message(self.net.build_message("UPDATEDOC", [payload]))
+                    self.net.send_message(
+                        self.net.build_message("UPDATEDOC", [payload])
+                    )
                     self.prev_content = new_text
                     self.awaiting_update = True
                 except Exception as e:
                     print(f"Error sending update: {e}")
 
-
     def handle_info(self, *params, net):
         print("Recived info: ", params)
+
+    def handle_take_link(self, _, link, net):
+        print("Requesting link with sid: ", link)
+        self.net.send_message(self.net.build_message("GETSUMMARY", [link]))
 
     def take_update(self, _, *params, net):
         """Enhanced server update handler with input freezing"""
         try:
             # Indicate server update is in progress
             self.is_proccesing.set()
-            
+
             # Decode update
             jsoned = json.loads(base64.b64decode(params[0]).decode())
-            
+
             def update_ui():
                 try:
                     # Disable editor during update
                     self.editor.Disable()
-                    
+
                     # Update content
-                    new_content = jsoned['doc_content']
+                    new_content = jsoned["doc_content"]
                     self.editor.SetValue(new_content)
                     self.prev_content = new_content
                     self.update_html_view()
-                    
+
                     # Re-enable editor after short delay
                     wx.CallLater(500, self.editor.Enable)
-                    
+
                     # Clear update flags
                     self.awaiting_update = False
                     self.is_proccesing.clear()
-                
+
                 except Exception as e:
                     print(f"UI Update Error: {e}")
                     self.editor.Enable()
@@ -424,7 +497,7 @@ class MainFrame(wx.Frame):
 
             # Ensure UI update happens on main thread
             wx.CallAfter(update_ui)
-        
+
         except Exception as e:
             print(f"Update Processing Error: {e}")
             self.is_proccesing.clear()
@@ -523,7 +596,6 @@ class MainFrame(wx.Frame):
 
         # Process tables
         in_table = False
-        table_rows = []
 
         # Use a simple state machine to process the content
         i = 0
@@ -1049,7 +1121,7 @@ class MainFrame(wx.Frame):
                 self.prev_content = cont
 
                 dicty["font"] = dicty.get("font", "Arial")
-                if dicty["font"].startswith("http"):
+                if dicty['font'] and dicty["font"].startswith("http"):
                     self.current_font = {
                         "name": dicty["font"],
                         "url": dicty["font"],
@@ -1057,19 +1129,20 @@ class MainFrame(wx.Frame):
                     }
                 else:
                     self.current_font = {
-                        "name": dicty["font"],
+                        "name": dicty.get("font", "Arial") if dicty.get("font") else "Arial",
                         "url": None,
                         "from_url": False,
                     }
-
-                self.update_timer.Start(3000)  # Check every 3 seconds
-                self.update_enable_timer.Start(10000)
-
                 if hasattr(self, "carousel") and self.carousel:
                     self.carousel.Close()
                 else:
                     print("No carousel to close")
-                self.update_doc(None)
+                # self.update_doc(None)
+                # print("Sleeping 5 secs")
+                # time.sleep(5)
+                self.update_timer.Start(1000)  # Check every 3 seconds
+                self.update_enable_timer.Start(3000)
+
             except Exception as e:
                 print("Error: ", e)
                 wx.MessageBox(
@@ -1080,327 +1153,3 @@ class MainFrame(wx.Frame):
                 self.Close()
 
         wx.CallAfter(process_summary)
-
-
-class EventsDialog(wx.Dialog):
-    def __init__(self, events, parent, net):
-        super().__init__(None, title="Your Events", size=(600, 400))
-        self.events = events
-        self.parent = parent
-        self.net = net
-        self.delete_buttons = []  # Store references to delete buttons
-
-        self.setup_ui()  # Initialize UI
-
-    def setup_ui(self):
-        """Setup the UI components and refresh the dialog when called."""
-        # Clear existing UI
-        self.DestroyChildren()
-
-        # Main layout
-        panel = wx.Panel(self)
-        vbox = wx.BoxSizer(wx.VERTICAL)
-
-        # Events list (using a ListCtrl for columns)
-        self.events_list = wx.ListCtrl(panel, style=wx.LC_REPORT)
-        self.events_list.InsertColumn(0, "Title", width=200)
-        self.events_list.InsertColumn(1, "Date", width=120)
-        self.events_list.InsertColumn(2, "Created", width=180)
-        self.events_list.InsertColumn(3, "Past Due", width=80)
-
-        # Populate the list and color rows that are past due
-        for i, event in enumerate(self.events):
-            is_past_due = event["event_date"] < datetime.datetime.now()
-            index = self.events_list.InsertItem(i, event["event_title"])
-            self.events_list.SetItem(
-                index, 1, event["event_date"].strftime("%Y-%m-%d %H:%M")
-            )
-            self.events_list.SetItem(
-                index, 2, event["createTime"].strftime("%Y-%m-%d %H:%M")
-            )
-            self.events_list.SetItem(index, 3, str(is_past_due))
-
-            # Color the row red if past due
-            if is_past_due:
-                for col in range(4):
-                    self.events_list.SetItemTextColour(index, wx.RED)
-
-        # Create delete buttons
-        buttons_panel = wx.Panel(panel)
-        buttons_sizer = wx.BoxSizer(wx.VERTICAL)
-        buttons_sizer.Add((0, 23))  # Spacer for header
-
-        self.delete_buttons = []  # Reset button list
-
-        for i, event in enumerate(self.events):
-            delete_btn = wx.Button(
-                buttons_panel, id=event["id"], label="Delete", size=(70, -1)
-            )
-            delete_btn.Bind(wx.EVT_BUTTON, self.on_delete)
-            self.delete_buttons.append(delete_btn)
-            buttons_sizer.Add(delete_btn, flag=wx.BOTTOM, border=1)
-
-        buttons_panel.SetSizer(buttons_sizer)
-        self.btn_panel = buttons_panel
-
-        # Layout adjustments
-        h_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        h_sizer.Add(self.events_list, proportion=1, flag=wx.EXPAND)
-        h_sizer.Add(buttons_panel, flag=wx.ALIGN_TOP | wx.LEFT, border=5)
-        vbox.Add(h_sizer, proportion=1, flag=wx.EXPAND | wx.ALL, border=10)
-
-        # Close button
-        close_button = wx.Button(panel, label="Close")
-        close_button.Bind(wx.EVT_BUTTON, self.on_close)
-        vbox.Add(close_button, flag=wx.ALIGN_CENTER | wx.ALL, border=10)
-
-        panel.SetSizer(vbox)
-        self.Layout()
-
-    def on_delete(self, event):
-        """Handles delete event and refreshes UI."""
-        btn_id = event.GetId()
-        self.net.send_message(self.net.build_message("DELETEEVENT", [str(btn_id)]))
-
-        def on_delete_success(parent, *params, net):
-            selfrl = parent.events_dialog
-            # msg = self.net.recv_message()
-            # code, params = self.net.get_message_code(
-            #     msg), self.net.get_message_params(msg)
-
-            # Remove event from list
-            selfrl.events = [event for event in self.events if event["id"] != btn_id]
-
-            # Refresh UI
-            selfrl.setup_ui()
-
-        self.parent.net.add_handler("DELETE_SUCCESS", on_delete_success)
-
-    def on_close(self, event):
-        self.Close()
-        exit()
-
-
-class SummaryCarousel(wx.Dialog):
-    def __init__(self, summaries, net, parent):
-        super().__init__(None, title="Summaries Carousel", size=(600, 400))
-        self.summaries = summaries
-        self.parent = parent
-        # Main layout
-        panel = wx.Panel(self)
-        vbox = wx.BoxSizer(wx.VERTICAL)
-
-        # Listbox to display summaries
-        self.summary_list = wx.ListBox(panel, style=wx.LB_SINGLE)
-        for summ in self.summaries:
-            display_text = f"{summ.shareLink} - By User {summ.ownerId} - Created on {summ.createTime.strftime('%Y-%m-%d %H:%M:%S')}"
-            self.summary_list.Append(display_text)
-
-        vbox.Add(self.summary_list, proportion=1, flag=wx.EXPAND | wx.ALL, border=10)
-
-        # Buttons
-        hbox = wx.BoxSizer(wx.HORIZONTAL)
-        open_button = wx.Button(panel, label="Open")
-        close_button = wx.Button(panel, label="Close")
-        hbox.Add(open_button, flag=wx.ALL, border=5)
-        hbox.Add(close_button, flag=wx.ALL, border=5)
-
-        vbox.Add(hbox, flag=wx.ALIGN_CENTER | wx.ALL, border=10)
-        panel.SetSizer(vbox)
-
-        # Bind events
-        open_button.Bind(wx.EVT_BUTTON, self.on_open_summary)
-        close_button.Bind(wx.EVT_BUTTON, self.on_close)
-        self.net = net
-
-    def on_open_summary(self, event):
-        selection = self.summary_list.GetSelection()
-        if selection == wx.NOT_FOUND:
-            wx.MessageBox(
-                "Please select a summary to open.",
-                "No Selection",
-                wx.OK | wx.ICON_WARNING,
-            )
-            return
-
-        selected_summary = self.summaries[selection]
-        print(selected_summary)
-        wx.MessageBox(
-            f"Opening summary:\n\n"
-            f"Name: {selected_summary.shareLink}\n"
-            f"Path: {selected_summary.path_to_summary}",
-            "Open Summary",
-            wx.OK | wx.ICON_INFORMATION,
-        )
-
-        # self.net.add_handler("GETSUMMARY", handle_summary)
-        self.net.send_message(
-            self.net.build_message("GETSUMMARY", [str(selected_summary.id)])
-        )
-
-    def on_close(self, event):
-        self.Close()
-
-
-class FontSelectorDialog(wx.Dialog):
-    def __init__(self, parent, net):
-        super().__init__(parent, title="Font Selector", size=(600, 500))
-        self.parent = parent
-        self.net = net
-        self.custom_font_path = None
-        self.selected_font = None
-        self.from_url = False
-
-        panel = wx.Panel(self)
-        main_sizer = wx.BoxSizer(wx.VERTICAL)
-
-        # System fonts section
-        system_fonts_label = wx.StaticText(panel, label="System Fonts")
-        main_sizer.Add(system_fonts_label, flag=wx.ALL, border=5)
-
-        # Get all system fonts
-        font_enumerator = wx.FontEnumerator()
-        font_enumerator.EnumerateFacenames()
-        system_fonts = sorted(font_enumerator.GetFacenames())
-
-        # Create list for system fonts
-        self.system_fonts_list = wx.ListBox(panel, size=(-1, 200), choices=system_fonts)
-        main_sizer.Add(
-            self.system_fonts_list, proportion=1, flag=wx.EXPAND | wx.ALL, border=5
-        )
-
-        # Font preview
-        preview_label = wx.StaticText(panel, label="Preview:")
-        main_sizer.Add(preview_label, flag=wx.ALL, border=5)
-
-        self.preview_text = wx.TextCtrl(
-            panel,
-            value="The quick brown fox jumps over the lazy dog",
-            style=wx.TE_MULTILINE | wx.TE_READONLY,
-        )
-        self.preview_text.SetMinSize((580, 60))
-        main_sizer.Add(self.preview_text, flag=wx.EXPAND | wx.ALL, border=5)
-
-        # URL input for custom fonts
-        url_label = wx.StaticText(panel, label="Or download font from URL:")
-        main_sizer.Add(url_label, flag=wx.ALL, border=5)
-
-        self.url_input = wx.TextCtrl(panel)
-        main_sizer.Add(self.url_input, flag=wx.EXPAND | wx.ALL, border=5)
-
-        # Download button
-        download_button = wx.Button(panel, label="Download & Preview")
-        main_sizer.Add(download_button, flag=wx.ALL, border=5)
-
-        # Buttons
-        button_sizer = wx.StdDialogButtonSizer()
-        self.ok_button = wx.Button(panel, wx.ID_OK)
-        self.ok_button.SetDefault()
-        # Initially disabled until a font is selected
-        self.ok_button.Enable(False)
-        cancel_button = wx.Button(panel, wx.ID_CANCEL)
-
-        button_sizer.AddButton(self.ok_button)
-        button_sizer.AddButton(cancel_button)
-        button_sizer.Realize()
-
-        main_sizer.Add(button_sizer, flag=wx.ALIGN_CENTER | wx.ALL, border=10)
-
-        panel.SetSizer(main_sizer)
-
-        # Bind events
-        self.system_fonts_list.Bind(wx.EVT_LISTBOX, self.on_font_selected)
-        download_button.Bind(wx.EVT_BUTTON, self.on_download_font)
-
-    def on_font_selected(self, event):
-        font_name = self.system_fonts_list.GetStringSelection()
-        if font_name:
-            self.selected_font = font_name
-            self.from_url = False
-            self.ok_button.Enable(True)
-
-            # Update preview
-            font = wx.Font(
-                12,
-                wx.FONTFAMILY_DEFAULT,
-                wx.FONTSTYLE_NORMAL,
-                wx.FONTWEIGHT_NORMAL,
-                False,
-                font_name,
-            )
-            self.preview_text.SetFont(font)
-
-    def on_download_font(self, event):
-        url = self.url_input.GetValue().strip()
-        if not url:
-            wx.MessageBox("Please enter a URL", "Error", wx.OK | wx.ICON_ERROR)
-            return
-
-        # Check if URL is valid and points to a font file
-        if not (url.lower().endswith(".ttf") or url.lower().endswith(".otf")):
-            wx.MessageBox(
-                "URL must point to a .ttf or .otf font file",
-                "Error",
-                wx.OK | wx.ICON_ERROR,
-            )
-            return
-
-        try:
-            # Create a progress dialog
-            progress_dialog = wx.ProgressDialog(
-                "Downloading Font",
-                "Downloading font file...",
-                maximum=100,
-                parent=self,
-                style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE,
-            )
-
-            # Download the file to a temporary location
-            temp_dir = tempfile.gettempdir()
-            font_filename = os.path.basename(url)
-            self.custom_font_path = os.path.join(temp_dir, font_filename)
-
-            def reporthook(blocknum, blocksize, totalsize):
-                if totalsize > 0:
-                    percent = min(int(blocknum * blocksize * 100 / totalsize), 100)
-                    progress_dialog.Update(percent)
-
-            urllib.request.urlretrieve(url, self.custom_font_path, reporthook)
-            progress_dialog.Destroy()
-
-            # Try to load the font
-            if wx.Font.AddPrivateFont(self.custom_font_path):
-                # Extract font name
-                # This is a simplified approach - in a real app, you might need a more robust way to get the font name
-                font_name = os.path.splitext(font_filename)[0]
-                self.selected_font = font_name
-                self.from_url = True
-
-                # Update preview with the new font
-                font = wx.Font(
-                    12,
-                    wx.FONTFAMILY_DEFAULT,
-                    wx.FONTSTYLE_NORMAL,
-                    wx.FONTWEIGHT_NORMAL,
-                    False,
-                    font_name,
-                )
-                self.preview_text.SetFont(font)
-
-                self.ok_button.Enable(True)
-                wx.MessageBox(
-                    f"Font '{font_name}' downloaded successfully",
-                    "Success",
-                    wx.OK | wx.ICON_INFORMATION,
-                )
-            else:
-                wx.MessageBox(
-                    "Failed to load the downloaded font", "Error", wx.OK | wx.ICON_ERROR
-                )
-                self.custom_font_path = None
-
-        except Exception as e:
-            wx.MessageBox(
-                f"Error downloading font: {str(e)}", "Error", wx.OK | wx.ICON_ERROR
-            )
-            self.custom_font_path = None
