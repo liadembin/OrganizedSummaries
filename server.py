@@ -19,14 +19,22 @@ from OCRManager import ExtractText
 import pickle
 import threading
 from typing import Dict
+from google_auth_oauthlib.flow import Flow
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+import secrets
 
+SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+CLIENT_SECRETS_FILE = "credentials.json"
+API_SERVICE_NAME = "calendar"
+API_VERSION = "v3"
 PEPPER = b"PEPPER"
 id_per_sock = {}
 ids_per_summary_id = {}
 net_per_sock = {}
 lock_per_sock: Dict[socket.socket, threading.Lock] = {}
 doc_changes_lock = threading.Lock()
-
+historic_id_per_sock = {} 
 
 def handle_key_exchange(
     sock, crypt: cryptManager.CryptManager
@@ -113,19 +121,22 @@ def handle_save(
         print("NOT logged in")
         net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
         return True
+    print("Saving title: ", title)
+    # net.send_message(net.build_message("ERROR",["ASD"]))
     if title == "":
         sid = -1
         for k, v in ids_per_summary_id.items():
             if db_manager.get_id_per_sock(net.sock) in v:
                 sid = k
                 break
+        print(f"Updating, {sid=}")
         db_manager.update_summary(sid, summary, font)
 
     else:
         db_manager.insert_summary(
             title, summary, db_manager.get_id_per_sock(net.sock), font
         )
-    net.send_message(net.build_message("SAVE_SUCCESS", []))
+    net.send_message(net.build_message("SAVE_SUCCESS", ["IT WAS CALLED"]))
     return False
 
 
@@ -482,6 +493,112 @@ def handle_get_graph(db_manager, *_, net: networkManager.NetworkManager) -> bool
     return False
 
 
+def handle_saving_events(
+    db_manager, jsoned_events, net: networkManager.NetworkManager
+) -> bool:
+    id = db_manager.get_id_per_sock(net.sock)
+    if not db_manager.get_is_sock_logged(net.sock):
+        print("NOT logged in")
+        net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
+        return True
+    # print("Saving events: ", jsoned_events)
+    events = pickle.loads(base64.b64decode(jsoned_events))  # json.loads(jsoned_events)
+    # print(events)
+    print(events)
+    for event in events:
+        db_manager.insert_event(id, event["event_title"], event["event_date"])
+    net.send_message(net.build_message("INFO", ["Event successfully added"]))
+    return False
+
+
+def get_historic_list(db_manager, *_, net: networkManager.NetworkManager) -> bool:
+    uid = db_manager.get_id_per_sock(net.sock)
+    if not db_manager.get_is_sock_logged(net.sock):
+        print("NOT logged in")
+        net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
+        return True
+    sid = -1
+    for k, v in ids_per_summary_id.items():
+        if db_manager.get_id_per_sock(net.sock) in v:
+            sid = k
+            break
+    if sid == -1:
+        net.send_message(net.build_message("ERROR", ["NO SUMMARY OPENED"]))
+        return True
+    # read the directory save/{sid}/ (read sub directorys which are all timestamps)
+    dirs = os.listdir(f"save/{sid}/")
+    return net.send_message(
+        net.build_message(
+            "HISTORICLIST", [base64.b64encode(pickle.dumps(dirs)).decode()]
+        )
+    )
+
+
+def load_historic_summary(
+    db_manager, timestamp, net: networkManager.NetworkManager
+) -> bool:
+    uid = db_manager.get_id_per_sock(net.sock)
+    if not db_manager.get_is_sock_logged(net.sock):
+        print("NOT logged in")
+        net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
+        return True
+    sid = -1
+    for k, v in ids_per_summary_id.items():
+        if db_manager.get_id_per_sock(net.sock) in v:
+            sid = k
+            break
+    if sid == -1:
+        net.send_message(net.build_message("ERROR", ["NO SUMMARY OPENED"]))
+        return True
+    # read the directory save/{sid}/{timestamp}/ (read sub directorys which are all timestamps)
+    if not db_manager.can_access(sid, db_manager.get_id_per_sock(net.sock)):
+        net.send_message(net.build_message("ERROR", ["NO PERMISSION"]))
+        return True
+
+
+    with open(f"save/{sid}/{timestamp}/summary.md", "rb") as f:
+        data = f.read()
+    # remove the user from the queues
+    for key, value in ids_per_summary_id.items():
+        if uid in value:
+            value.remove(uid)
+            break
+    # remove the user from the doc_changes
+    summ: Summary = db_manager.get_summary(sid)
+    summ.content = data.decode()
+    historic_id_per_sock[db_manager.get_id_per_sock(net.sock)] = summ.id
+    net.send_message(
+        net.build_message(
+            "TAKEHIST",
+            [base64.b64encode(pickle.dumps({"data": data, "summ": summ})).decode()],
+        )
+    )
+    return False
+
+def handle_historic_graph(db_manager, timestamp, net: networkManager.NetworkManager) -> bool:
+    if not db_manager.get_is_sock_logged(net.sock):
+        print("NOT logged in")
+        net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
+        return True   
+    uid = db_manager.get_id_per_sock(net.sock)
+    if uid not in historic_id_per_sock:
+        print("NO HISTORIC ID for: ", net.sock)
+        print(historic_id_per_sock)
+        net.send_message(net.build_message("ERROR", ["NO HISTORIC ID"]))
+        return True
+    sid = historic_id_per_sock[uid]
+
+    # check premission of user to access the sumamry 
+    if not db_manager.can_access(sid, db_manager.get_id_per_sock(net.sock)):
+        net.send_message(net.build_message("ERROR", ["NO PERMISSION"]))
+        return True
+    # read the directory save/{sid}/{timestamp}/graph.pkl
+    # format as:("%Y%m%d%H%M%S") from YYYY-MM-DD HH:MM:SS
+    dt_obj = datetime.datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+    timestampftm = dt_obj.strftime("%Y%m%d%H%M%S")
+    with open(f"save/{sid}/{timestampftm}/graph.pkl", "rb") as f:
+        data = f.read()
+    return net.send_message("TAKEGRAPH", [base64.b64encode(pickle.dumps(data)).decode()])
 def thread_main(sock, addr, crypt):
     net: networkManager.NetworkManager = handle_key_exchange(sock, crypt)
     net.set_lock(threading.Lock())
@@ -519,6 +636,10 @@ def thread_main(sock, addr, crypt):
     net.add_handler("UPDATEDOC", handle_update_document)
     net.add_handler("SHARESUMMARY", handle_share_summary)
     net.add_handler("GETGRAPH", handle_get_graph)
+    net.add_handler("SAVE_EVENTS", handle_saving_events)
+    net.add_handler("GETHISTORICLIST", get_historic_list)
+    net.add_handler("LOADHISTORIC", load_historic_summary)
+    net.add_handler("HISTORICGRAPH",handle_historic_graph)
     net_per_sock[sock] = net
     sock.settimeout(0.5)
     while True:

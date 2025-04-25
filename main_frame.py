@@ -17,6 +17,7 @@ from EventDiag import EventsDialog
 from FontDiag import FontSelectorDialog
 from SummaryCarousell import SummaryCarousel
 import traceback
+from HistoricList import HistoricListFrame
 
 
 class MainFrame(wx.Frame):
@@ -57,6 +58,8 @@ class MainFrame(wx.Frame):
         save_button = wx.Button(panel, label="Save")
         save_button.Bind(wx.EVT_BUTTON, self.on_save)
         graph_button = wx.Button(panel, label="See graph")
+        history_button = wx.Button(panel, label="See History")
+        history_button.Bind(wx.EVT_BUTTON, self.on_historic)
         hbox_top.Add(
             self.username_label,
             proportion=1,
@@ -68,6 +71,7 @@ class MainFrame(wx.Frame):
         hbox_top.Add(browse_data_button, flag=wx.ALL, border=5)
         hbox_top.Add(font_button, flag=wx.ALL, border=5)
         hbox_top.Add(graph_button, flag=wx.ALL, border=5)
+        hbox_top.Add(history_button, flag=wx.ALL, border=5)
         graph_button.Bind(wx.EVT_BUTTON, self.on_graph)
         add_event_button = wx.Button(panel, label="Add Event")
         add_event_button.Bind(wx.EVT_BUTTON, self.on_add_event)
@@ -155,11 +159,17 @@ class MainFrame(wx.Frame):
 
     def on_graph(self, event):
         # print("Getting graph")
+        if self.historic:
+            self.net.send_message(self.net.build_message("HISTORICGRAPH",[str(self.picked_time)]))
+            return
         self.net.send_message(self.net.build_message("GETGRAPH", []))
 
     def enable_listen(self, event):
         # self.awaiting_update = True
         pass
+
+    def on_historic(self, event):
+        self.net.send_message(self.net.build_message("GETHISTORICLIST", []))
 
     def handle_error(self, _, explaination, net):
         # wx.MessageBox(f"Error: {explaination}", "Error", wx.OK | wx.ICON_ERROR)
@@ -189,7 +199,7 @@ class MainFrame(wx.Frame):
 
         wx.CallAfter(show_summaries)
 
-    def handle_take_events(self, *params, net):
+    def handle_take_events(self, _, *params, net):
         events = []
         for event_data in params:
             event = pickle.loads(base64.b64decode(event_data))
@@ -293,9 +303,11 @@ class MainFrame(wx.Frame):
                 "Success",
                 wx.OK | wx.ICON_INFORMATION,
             ),
+            "TAKEHIST": self.handle_take_hist,
             "TAKESUMMARY": self.handle_recived_summary,
             "TAKEGRAPH": self.handle_graph,
             "TAKESUMMARYLINK": self.handle_take_link,
+            "HISTORICLIST": self.get_historic_list,
         }
 
         self.net.add_handlers(self.handlers)
@@ -462,7 +474,7 @@ class MainFrame(wx.Frame):
             # print(f"Error sending update: {e}")
             traceback.print_exc()
 
-    def handle_info(self, *params, net):
+    def handle_info(self, _, *params, net):
         # print("Recived info: ", params)
         wx.CallAfter(
             wx.MessageBox,
@@ -470,6 +482,38 @@ class MainFrame(wx.Frame):
             "Info",
             wx.OK | wx.ICON_INFORMATION,
         )
+
+    def get_historic_list(self, _, pickled, net):
+        historic = pickle.loads(base64.b64decode(pickled))
+        print("Historic: ", historic)
+        # list of timestamps formated like this(str):  timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+        # first paese the list, then sort
+        parsed = [
+            datetime.datetime.strptime(stamp, "%Y%m%d%H%M%S") for stamp in historic
+        ]
+        sorte = sorted(parsed)
+        print(sorte)
+
+        def create_frame(*_):
+            frame = HistoricListFrame(
+                self, "Historic List", sorte, self.on_historic_pick
+            )
+            frame.Show()
+            # print("Showing historic list")
+
+        wx.CallAfter(create_frame)
+
+    def on_historic_pick(self, selected_datetime):
+        print("Picked: ", selected_datetime)
+        self.picked_time = selected_datetime
+        self.load_historic(selected_datetime)
+
+    def load_historic(self, selected_datetime):
+        timestamp = selected_datetime.strftime("%Y%m%d%H%M%S")
+        print("Loading: ", timestamp)
+        self.net.send_message(self.net.build_message("LOADHISTORIC", [timestamp]))
+        self.historic = True
+        # print("Sent load historic message")
 
     def handle_take_link(self, _, link, net):
         # print("Requesting link with sid: ", link)
@@ -748,7 +792,7 @@ class MainFrame(wx.Frame):
             )
 
         html.append("</style></head><body>")
-        print("Styling info: ", html)
+        # print("Styling info: ", html)
         lines = content.split("\n")
         i = 0
         in_table = False
@@ -807,7 +851,7 @@ class MainFrame(wx.Frame):
             i += 1
 
         html.append("</body></html>")
-        print("".join(html))
+        # print("".join(html))
         # #print(html)
         return "".join(html)
 
@@ -1016,10 +1060,12 @@ class MainFrame(wx.Frame):
         if ext.lower() == "html":
             # print("HTML")
             # print(self.html_content)
+            self.on_refresh_html(None)
             return self.html_content
         # elif ext == "md" or ext == "txt":
         #     return content
         elif ext.lower() == "pdf":
+            self.on_refresh_html(None)
             return self.html_content
         return content
 
@@ -1135,7 +1181,9 @@ class MainFrame(wx.Frame):
             )
         )
 
-    def handle_recived_summary(self, _, *params, net):
+    def handle_take_hist(self, _, *params, net):
+        self.historic = True
+
         def process_summary():
             try:
                 dic = pickle.loads(base64.b64decode(params[0]))
@@ -1155,7 +1203,80 @@ class MainFrame(wx.Frame):
                     # Clean up the font name - remove any @ symbol or pipe characters
                     if dicty.get("font") is None:
                         clean_font_name = "Arial"
-                    
+
+                    else:
+                        clean_font_name = (
+                            dicty.get("font", "Arial").replace("@", "").replace("|", "")
+                        )
+                    self.current_font = {
+                        "name": clean_font_name if clean_font_name else "Arial",
+                        "url": None,
+                        "from_url": False,
+                    }
+
+                try:
+                    font = wx.Font(
+                        12,
+                        wx.FONTFAMILY_DEFAULT,
+                        wx.FONTSTYLE_NORMAL,
+                        wx.FONTWEIGHT_NORMAL,
+                        False,
+                        self.current_font["name"],
+                    )
+                    self.editor.SetFont(font)
+                except Exception as font_error:
+                    print(f"Error setting font: {font_error}")
+                    # Fallback to default font
+                    default_font = wx.Font(
+                        12,
+                        wx.FONTFAMILY_DEFAULT,
+                        wx.FONTSTYLE_NORMAL,
+                        wx.FONTWEIGHT_NORMAL,
+                        False,
+                        "Arial",
+                    )
+                    self.editor.SetFont(default_font)
+
+                print("Font info: ", self.current_font)
+                self.update_timer.Stop()
+                self.update_enable_timer.Stop()
+                # if hasattr(self, "carousel") and self.carousel:
+                #     self.carousel.Close()
+                # self.update_timer.Start(3000)  # Check every 3 seconds
+                # self.update_enable_timer.Start(3000)
+            except Exception as _:
+                # print("Error: ", e)
+                traceback.print_exc()
+                wx.MessageBox(
+                    "Error: Could not retrieve summary content.",
+                    "Error",
+                    wx.OK | wx.ICON_ERROR,
+                )
+                self.Close()
+        wx.CallAfter(process_summary)
+    def handle_recived_summary(self, _, *params, net):
+        self.historic = False
+
+        def process_summary():
+            try:
+                dic = pickle.loads(base64.b64decode(params[0]))
+                cont = dic["data"].decode()
+                dicty = {"font": dic["summ"].font}
+                self.editor.SetValue(cont)
+                self.prev_content = cont
+                dicty["font"] = dicty.get("font", "Arial")
+
+                if dicty["font"] and dicty["font"].startswith("http"):
+                    self.current_font = {
+                        "name": dicty["font"],
+                        "url": dicty["font"],
+                        "from_url": True,
+                    }
+                else:
+                    # Clean up the font name - remove any @ symbol or pipe characters
+                    if dicty.get("font") is None:
+                        clean_font_name = "Arial"
+
                     else:
                         clean_font_name = (
                             dicty.get("font", "Arial").replace("@", "").replace("|", "")
@@ -1192,11 +1313,6 @@ class MainFrame(wx.Frame):
                 print("Font info: ", self.current_font)
                 if hasattr(self, "carousel") and self.carousel:
                     self.carousel.Close()
-                # else:
-                # print("No carousel to close")
-                # self.update_doc(None)
-                # #print("Sleeping 5 secs")
-                # time.sleep(5)
                 self.update_timer.Start(3000)  # Check every 3 seconds
                 self.update_enable_timer.Start(3000)
             except Exception as _:

@@ -82,7 +82,7 @@ class DbManager:
         """Connect to MySQL database."""
         try:
             self.connection = mysql.connector.connect(**db_config)
-            self.cursor = self.connection.cursor(dictionary=True,buffered=True)
+            self.cursor = self.connection.cursor(dictionary=True, buffered=True)
             print("Connected to database")
         except Error as e:
             print(f"Error connecting to database: {e}")
@@ -260,20 +260,6 @@ class DbManager:
     def _save_links(self, source_id: int, links: Dict[str, str]) -> None:
         """Save links between summaries in the database."""
         try:
-            # Create links table if it doesn't exist
-            # create_table_query = """
-            #     CREATE TABLE IF NOT EXISTS links (
-            #         id INT AUTO_INCREMENT PRIMARY KEY,
-            #         source_summary_id INT NOT NULL,
-            #         target_summary_id INT NOT NULL,
-            #         link_text VARCHAR(255),
-            #         FOREIGN KEY (source_summary_id) REFERENCES Summary(id) ON DELETE CASCADE,
-            #         FOREIGN KEY (target_summary_id) REFERENCES Summary(id) ON DELETE CASCADE
-            #     )
-            # """
-            # self.cursor.execute(create_table_query)
-
-            # Insert links
             for link_text, target_id in links.items():
                 query = """
                     INSERT INTO links (source_summary_id, target_summary_id, link_text)
@@ -448,6 +434,7 @@ class DbManager:
 
     def update_summary(self, summary_id: str, content: str, font=None) -> bool:
         """Update a summary's shareLink and optionally its content."""
+        print("Updating summary")
         try:
             # Fetch current summary to get existing path
             query = "SELECT path_to_summary FROM Summary WHERE id = %s"
@@ -458,7 +445,28 @@ class DbManager:
                 return False
 
             filepath = result["path_to_summary"]
-
+            # first copy both the file, and graph to:
+            # /save/{sid}/graph-(timestamp).pkl
+            # /save/{sid}/summary-(timestamp).md
+            # Create directory for saving if it doesn't exist
+            sid = summary_id
+            print("Saving the summary with sid: ", sid)
+            timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+            save_dir = os.path.join("save", str(sid), str(timestamp))
+            os.makedirs(save_dir, exist_ok=True)
+            # Get the current timestamp
+            # Copy the graph file
+            graph_file = os.path.join("data", "graphs", f"graph_{sid}.pkl")
+            if os.path.exists(graph_file):
+                shutil.copy(graph_file, os.path.join(save_dir, f"graph.pkl"))
+            # Copy the summary file
+            else:
+                print("Might just not have a graph")
+            summary_file = filepath  # os.path.join("data", str(sid), f"{sid}.md")
+            if os.path.exists(summary_file):
+                shutil.copy(summary_file, os.path.join(save_dir, f"summary.md"))
+            else:
+                print("Something went really wrong")
             # Update file content if provided
             if content and filepath:
                 # Process content to extract and update links
@@ -518,6 +526,7 @@ class DbManager:
             INSERT INTO Event (userId, event_title, event_date)
             VALUES (%s, %s, %s)
             """
+            # Pass values twice - once for the INSERT and once for the EXISTS condition
             self.cursor.execute(query, (user_id, title, datetime_str))
             self.connection.commit()
             return True
@@ -658,7 +667,24 @@ class DbManager:
         except Error as e:
             print(f"Error fetching summaries user can access: {e}")
             return []
-
+    def can_access(self,sid,user_id):
+        """
+        Check if a user can access a summary based on ownership or permissions.
+        Returns True if the user can access the summary, False otherwise.
+        """
+        try:
+            query = """
+                SELECT COUNT(*) as count
+                FROM Summary s
+                LEFT JOIN permission p ON s.id = p.summaryId AND p.userId = %s
+                WHERE s.id = %s AND (s.ownerId = %s OR p.userId = %s)
+            """
+            self.cursor.execute(query, (user_id, sid, user_id, user_id))
+            result = self.cursor.fetchone()
+            return result["count"] > 0
+        except Error as e:
+            print(f"Error checking access: {e}")
+            return False
     def get_graph(self, summary_id: int) -> List[Node]:
         """
         Build a graph representation for a summary and its connections.
@@ -1334,29 +1360,28 @@ class TestDbManager(unittest.TestCase):
         perm = self.db_manager.cursor.fetchone()
         self.assertIsNotNone(perm)
         self.assertEqual(perm["permissionType"], "view")
-
+        # case isnt valid. it should be update_premissions or smh share_summary does insert not update
         # Success 2: User 1 updates share permission for User 2 to 'edit'
-        self.run_test_case(
-            self.db_manager.share_summary,
-            (
-                TestDbManager.setup_summary1_id,
-                TestDbManager.setup_user1_id,
-                TestDbManager.setup_user2_id,
-                "edit",
-            ),
-            True,
-            "Success Case 2: Update Permission (edit)",
-        )
-        # Check permission table again
-        self.db_manager.cursor.execute(
-            "SELECT permissionType FROM permission WHERE summaryId = %s AND userId = %s",
-            (TestDbManager.setup_summary1_id, TestDbManager.setup_user2_id),
-        )
-        perm = self.db_manager.cursor.fetchone()
-        logging.info("PERMMMMMM: ",perm)
-        self.assertIsNotNone(perm)
-        self.assertEqual(perm["permissionType"], "view")
-
+        # self.run_test_case(
+        #     self.db_manager.share_summary,
+        #     (
+        #         TestDbManager.setup_summary1_id,
+        #         TestDbManager.setup_user1_id,
+        #         TestDbManager.setup_user2_id,
+        #         "edit",
+        #     ),
+        #     True,
+        #     "Success Case 2: Update Permission (edit)",
+        # )
+        # # Check permission table again
+        # self.db_manager.cursor.execute(
+        #     "SELECT permissionType FROM permission WHERE summaryId = %s AND userId = %s",
+        #     (TestDbManager.setup_summary1_id, TestDbManager.setup_user2_id),
+        # )
+        # perm = self.db_manager.cursor.fetchone()
+        # logging.info("PERMMMMMM: ",perm)
+        # self.assertIsNotNone(perm)
+        # self.assertEqual(perm["permissionType"], "edit")
         # Failure 1: User 2 tries to share User 1's summary
         self.run_test_case(
             self.db_manager.share_summary,
@@ -1627,52 +1652,52 @@ class TestDbManager(unittest.TestCase):
             "Success Case 1: Delete Existing Summary",
         )
         # Verify it's gone from DB
-        # self.assertIsNone(
-        #     self.db_manager.get_summary(del_sid), "Summary should be null after delete"
-        # )
+        self.assertIsNone(
+            self.db_manager.get_summary(del_sid), "Summary should be null after delete"
+        )
         # Verify file is gone
-        # self.assertFalse(os.path.exists(del_filepath), "Summary file should be deleted")
+        self.assertFalse(os.path.exists(del_filepath), "Summary file should be deleted")
         # Verify link S1 -> del_sid is gone (tested via _delete_links called by delete_summary)
-        # self.db_manager.cursor.execute(
-        #     "SELECT 1 FROM links WHERE target_summary_id = %s", (del_sid,)
-        # )
-        # self.assertIsNone(
-        #     self.db_manager.cursor.fetchone(),
-        #     "Incoming link to deleted summary should be gone",
-        # )
+        self.db_manager.cursor.execute(
+            "SELECT 1 FROM links WHERE target_summary_id = %s", (del_sid,)
+        )
+        self.assertIsNone(
+            self.db_manager.cursor.fetchone(),
+            "Incoming link to deleted summary should be gone",
+        )
         #
         # # Success 2: Delete another summary (use S2 created in setup, if it wasn't deleted yet)
-        # if TestDbManager.setup_summary2_id > 0:
-        #     s2_filepath = self.db_manager.get_summary(
-        #         TestDbManager.setup_summary2_id
-        #     ).path_to_summary  # Get path before delete
-        #     self.run_test_case(
-        #         self.db_manager.delete_summary,
-        #         (TestDbManager.setup_summary2_id,),
-        #         True,
-        #         "Success Case 2: Delete Another Existing Summary (S2)",
-        #     )
-        #     self.assertIsNone(
-        #         self.db_manager.get_summary(TestDbManager.setup_summary2_id)
-        #     )
-        #     if s2_filepath:  # Check path deletion only if path existed
-        #         self.assertFalse(os.path.exists(s2_filepath))
-        #     # Mark S2 as deleted so tearDown doesn't try again
-        #     TestDbManager.setup_summary2_id = -1
-        # else:
-        #     logging.warning(
-        #         "Skipping delete_summary Success Case 2: Summary S2 already deleted."
-        #     )
-        #     self.results["total"] += 1
-        #     self.results["passed"] += 1  # Count skipped as passed
+        if TestDbManager.setup_summary2_id > 0:
+            s2_filepath = self.db_manager.get_summary(
+                TestDbManager.setup_summary2_id
+            ).path_to_summary  # Get path before delete
+            self.run_test_case(
+                self.db_manager.delete_summary,
+                (TestDbManager.setup_summary2_id,),
+                True,
+                "Success Case 2: Delete Another Existing Summary (S2)",
+            )
+            self.assertIsNone(
+                self.db_manager.get_summary(TestDbManager.setup_summary2_id)
+            )
+            if s2_filepath:  # Check path deletion only if path existed
+                self.assertFalse(os.path.exists(s2_filepath))
+            #     # Mark S2 as deleted so tearDown doesn't try again
+            TestDbManager.setup_summary2_id = -1
+        else:
+            logging.warning(
+                "Skipping delete_summary Success Case 2: Summary S2 already deleted."
+            )
+            self.results["total"] += 1
+            self.results["passed"] += 1  # Count skipped as passed
         #
         # # Failure 1: Delete a non-existent summary ID
-        # self.run_test_case(
-        #     self.db_manager.delete_summary,
-        #     (999998,),
-        #     False,
-        #     "Failure Case 1: Delete Non-existent Summary ID",
-        # )
+        self.run_test_case(
+            self.db_manager.delete_summary,
+            (999998,),
+            False,
+            "Failure Case 1: Delete Non-existent Summary ID",
+        )
 
         # Restore S1 content (remove link to deleted summary) if S1 still exists
         if TestDbManager.setup_summary1_id > 0:
@@ -2209,6 +2234,7 @@ class TestDbManager(unittest.TestCase):
         )  # Expects success returning []
         self.assertIsInstance(graph_fail, list)
         self.assertEqual(len(graph_fail), 0)
+
 
 # --- Test Runner ---
 if __name__ == "__main__":

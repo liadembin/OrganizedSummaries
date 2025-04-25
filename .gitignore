@@ -12,3 +12,5 @@ data
 *.jpg 
 *.png
 *.mypy-cache/**
+credentials.json
+save/**
