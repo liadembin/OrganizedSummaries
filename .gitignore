@@ -14,3 +14,5 @@ data
 *.mypy-cache/**
 credentials.json
 save/**
+token.pickle
+
