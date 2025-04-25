@@ -598,7 +598,9 @@ def handle_historic_graph(db_manager, timestamp, net: networkManager.NetworkMana
     timestampftm = dt_obj.strftime("%Y%m%d%H%M%S")
     with open(f"save/{sid}/{timestampftm}/graph.pkl", "rb") as f:
         data = f.read()
-    return net.send_message("TAKEGRAPH", [base64.b64encode(pickle.dumps(data)).decode()])
+    dumped_data = base64.b64encode(data).decode()
+    net.send_message(net.build_message("TAKEGRAPH", [dumped_data]))
+    return False
 def thread_main(sock, addr, crypt):
     net: networkManager.NetworkManager = handle_key_exchange(sock, crypt)
     net.set_lock(threading.Lock())
