@@ -66,6 +66,14 @@ class Node:
         return hash((self.id, self.name, self.type))
 
 
+# @dataclass
+# class Event:
+#     id: int
+#     userId: int
+#     event_title: str
+#     event_date: datetime
+#     createTime: Optional[datetime] = None
+#     updateTime: Optional[datetime] = None
 class DbManager:
     def __init__(self):
         self.connection: Optional[MySQLConnection | PooledMySQLConnection] = None
@@ -519,6 +527,20 @@ class DbManager:
             print(f"Error deleting summary: {e}")
             return False
 
+    def get_event(self, uid, title):
+        """Get an event by title for a user."""
+        try:
+            query = """
+            SELECT * FROM Event
+            WHERE userId = %s AND event_title = %s
+            """
+            self.cursor.execute(query, (uid, title))
+            result = self.cursor.fetchone()
+            return result  # Event(**result) if result else None
+        except Error as e:
+            print(f"Error fetching event: {e}")
+            return None
+
     def insert_event(self, user_id: int, title: str, datetime_str: str) -> bool:
         """Insert a new event for a user with datetime."""
         try:
@@ -652,7 +674,9 @@ class DbManager:
             print(f"Error fetching all summaries by user: {e}")
             return []
 
-    def get_all_user_can_access(self, user_id: int) -> List[Summary]:
+    def get_all_user_can_access(
+        self, user_id: int, do_cont=True, size_read=200
+    ) -> List[Summary]:
         """Get all summaries the user can access, including owned and permitted ones."""
         try:
             query = """
@@ -663,11 +687,22 @@ class DbManager:
             """
             self.cursor.execute(query, (user_id, user_id, user_id))
             summaries = self.cursor.fetchall()
-            return [Summary(**su) for su in summaries]
+            summs = [Summary(**su) for su in summaries]
+            if do_cont:
+                for summ in summs:
+                    if summ.path_to_summary and os.path.exists(summ.path_to_summary):
+                        with open(summ.path_to_summary, "r", encoding="utf-8") as f:
+                            # if size_read == -1 :
+                            #     summ.content = f.read()#un needed but clearer
+                            # else:
+                            #     summ.content = f.read(size_read)#preview
+                            summ.content = f.read(size_read)
+            return summs
         except Error as e:
             print(f"Error fetching summaries user can access: {e}")
             return []
-    def can_access(self,sid,user_id):
+
+    def can_access(self, sid, user_id):
         """
         Check if a user can access a summary based on ownership or permissions.
         Returns True if the user can access the summary, False otherwise.
@@ -685,6 +720,7 @@ class DbManager:
         except Error as e:
             print(f"Error checking access: {e}")
             return False
+
     def get_graph(self, summary_id: int) -> List[Node]:
         """
         Build a graph representation for a summary and its connections.

@@ -73,9 +73,9 @@ class MainFrame(wx.Frame):
         hbox_top.Add(graph_button, flag=wx.ALL, border=5)
         hbox_top.Add(history_button, flag=wx.ALL, border=5)
         graph_button.Bind(wx.EVT_BUTTON, self.on_graph)
-        add_event_button = wx.Button(panel, label="Add Event")
-        add_event_button.Bind(wx.EVT_BUTTON, self.on_add_event)
-        hbox_top.Add(add_event_button, flag=wx.ALL, border=5)
+        # add_event_button = wx.Button(panel, label="Add Event")
+        # add_event_button.Bind(wx.EVT_BUTTON, self.on_add_event)
+        # hbox_top.Add(add_event_button, flag=wx.ALL, border=5)
         view_events_button = wx.Button(panel, label="View Events")
         view_events_button.Bind(wx.EVT_BUTTON, self.on_view_events)
         hbox_top.Add(view_events_button, flag=wx.ALL, border=5)
@@ -156,11 +156,14 @@ class MainFrame(wx.Frame):
         self.update_html_view()
         self.carousel = None
         self.events_dialog = None
+        self.historic = False
 
     def on_graph(self, event):
         # print("Getting graph")
         if self.historic:
-            self.net.send_message(self.net.build_message("HISTORICGRAPH",[str(self.picked_time)]))
+            self.net.send_message(
+                self.net.build_message("HISTORICGRAPH", [str(self.picked_time)])
+            )
             return
         self.net.send_message(self.net.build_message("GETGRAPH", []))
 
@@ -291,7 +294,7 @@ class MainFrame(wx.Frame):
             "ERROR": self.handle_error,
             "TAKESUMMARIES": self.handle_take_summaries,
             "SAVE_SUCCESS": self.save_handlers,
-            "EVENT_SUCCESS": self.handle_event_success,
+            # "EVENT_SUCCESS": lambda a,*params,net: wx.CallAfter(wx.MessageBox,f'Event created successfully','Success',wx.OK | wx.ICON_INFORMATION),# self.handle_event_success,
             "FILECONTENT": self.on_file_content,
             "SUMMARY": self.on_summary_recived,
             "TAKEEVENTS": self.handle_take_events,
@@ -1253,7 +1256,9 @@ class MainFrame(wx.Frame):
                     wx.OK | wx.ICON_ERROR,
                 )
                 self.Close()
+
         wx.CallAfter(process_summary)
+
     def handle_recived_summary(self, _, *params, net):
         self.historic = False
 

@@ -34,11 +34,12 @@ ids_per_summary_id = {}
 net_per_sock = {}
 lock_per_sock: Dict[socket.socket, threading.Lock] = {}
 doc_changes_lock = threading.Lock()
-historic_id_per_sock = {} 
+historic_id_per_sock = {}
+
 
 def handle_key_exchange(
     sock, crypt: cryptManager.CryptManager
-) -> networkManager.NetworkManager:
+) -> networkManager.NetworkManager | None:
     net: networkManager.NetworkManager = networkManager.NetworkManager(sock, crypt, {})
     # print("Public rsa key: ", crypt.get_public_key())
     net.send_message_plain(
@@ -46,10 +47,17 @@ def handle_key_exchange(
     )
     while not net.has_received():
         time.sleep(0.1)
-    public_key = net.get_message_params(net.recv_message_plain().decode())[0]
+    plain = net.recv_message_plain()
+    if plain == b"" or plain == "":
+        print("Client disconnected during key exchange")
+        return None
+    public_key = net.get_message_params(plain.decode())[0]
     crypt.aes_key = base64.b64decode(crypt.decrypt_rsa(base64.b64decode(public_key)))
     net.crypt_manager = crypt
     return net
+
+
+EVENT_DAY_REMIND = 7
 
 
 def handle_login(
@@ -65,6 +73,9 @@ def handle_login(
         id_per_sock[net.sock] = loged.id
     events = db_manager.get_events(loged.id) if loged else []
     # print("Eve: ", events)
+    N_days_from_today = datetime.datetime.now() + datetime.timedelta(
+        days=EVENT_DAY_REMIND
+    )
     net.send_message(
         net.build_message(
             "LOGIN_SUCCESS" if loged else "LOGIN_FAIL",
@@ -74,7 +85,7 @@ def handle_login(
                 else [
                     base64.b64encode(pickle.dumps(eve)).decode()
                     for eve in filter(
-                        lambda x: x["event_date"] < datetime.datetime.now(),
+                        lambda x: x["event_date"] <= N_days_from_today,
                         events,
                     )
                 ]
@@ -149,7 +160,12 @@ def handle_event(
         return True
 
     db_manager.insert_event(db_manager.get_id_per_sock(net.sock), title, datetime_str)
-    net.send_message(net.build_message("EVENT_SUCCESS", []))
+    even = db_manager.get_event(db_manager.get_id_per_sock(net.sock), title)
+    net.send_message(
+        net.build_message(
+            "EVENT_SUCCESS", [base64.b64encode(pickle.dumps(even)).decode()]
+        )
+    )
     return False
 
 
@@ -166,7 +182,7 @@ def handle_delete_event(
     success = db_manager.delete_event(event_id, user_id)
 
     if success:
-        net.send_message(net.build_message("DELETE_SUCCESS", []))
+        net.send_message(net.build_message("DELETE_SUCCESS", [str(event_id)]))
     else:
         net.send_message(
             net.build_message("ERROR", ["Failed to delete event or event not found"])
@@ -287,7 +303,9 @@ def handle_export(db_manager, content, ext, net: networkManager.NetworkManager) 
         net.send_message(net.build_message("ERROR", ["INVALID FORMAT"]))
         return True
     file_bytes = handle_build_file(db_manager, content, ext)
-    net.send_message(net.build_message("EXPORTED", [base64.b64encode(file_bytes)]))
+    net.send_message(
+        net.build_message("EXPORTED", [base64.b64encode(file_bytes).decode()])
+    )
     return False
 
 
@@ -481,10 +499,14 @@ def handle_get_graph(db_manager, *_, net: networkManager.NetworkManager) -> bool
         print("NOT logged in")
         net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
         return True
+    sid = -1
     for k, v in ids_per_summary_id.items():
         if id in v:
             sid = k
             break
+    if sid == -1:
+        net.send_message(net.build_message("ERROR", ["NO SUMMARY OPENED"]))
+        return True
     print("Getting graph for: ", sid)
     graph = db_manager.get_graph(sid)
     net.send_message(
@@ -527,11 +549,12 @@ def get_historic_list(db_manager, *_, net: networkManager.NetworkManager) -> boo
         return True
     # read the directory save/{sid}/ (read sub directorys which are all timestamps)
     dirs = os.listdir(f"save/{sid}/")
-    return net.send_message(
+    net.send_message(
         net.build_message(
             "HISTORICLIST", [base64.b64encode(pickle.dumps(dirs)).decode()]
         )
     )
+    return False
 
 
 def load_historic_summary(
@@ -555,7 +578,6 @@ def load_historic_summary(
         net.send_message(net.build_message("ERROR", ["NO PERMISSION"]))
         return True
 
-
     with open(f"save/{sid}/{timestamp}/summary.md", "rb") as f:
         data = f.read()
     # remove the user from the queues
@@ -575,11 +597,14 @@ def load_historic_summary(
     )
     return False
 
-def handle_historic_graph(db_manager, timestamp, net: networkManager.NetworkManager) -> bool:
+
+def handle_historic_graph(
+    db_manager, timestamp, net: networkManager.NetworkManager
+) -> bool:
     if not db_manager.get_is_sock_logged(net.sock):
         print("NOT logged in")
         net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
-        return True   
+        return True
     uid = db_manager.get_id_per_sock(net.sock)
     if uid not in historic_id_per_sock:
         print("NO HISTORIC ID for: ", net.sock)
@@ -588,7 +613,7 @@ def handle_historic_graph(db_manager, timestamp, net: networkManager.NetworkMana
         return True
     sid = historic_id_per_sock[uid]
 
-    # check premission of user to access the sumamry 
+    # check premission of user to access the sumamry
     if not db_manager.can_access(sid, db_manager.get_id_per_sock(net.sock)):
         net.send_message(net.build_message("ERROR", ["NO PERMISSION"]))
         return True
@@ -601,8 +626,13 @@ def handle_historic_graph(db_manager, timestamp, net: networkManager.NetworkMana
     dumped_data = base64.b64encode(data).decode()
     net.send_message(net.build_message("TAKEGRAPH", [dumped_data]))
     return False
+
+
 def thread_main(sock, addr, crypt):
-    net: networkManager.NetworkManager = handle_key_exchange(sock, crypt)
+    net: networkManager.NetworkManager | None = handle_key_exchange(sock, crypt)
+    if net is None:
+        print("Client disconnected during key exchange")
+        return
     net.set_lock(threading.Lock())
     print("Finished key exchange for: ", addr)
     db_manager = DbManager()
@@ -641,7 +671,7 @@ def thread_main(sock, addr, crypt):
     net.add_handler("SAVE_EVENTS", handle_saving_events)
     net.add_handler("GETHISTORICLIST", get_historic_list)
     net.add_handler("LOADHISTORIC", load_historic_summary)
-    net.add_handler("HISTORICGRAPH",handle_historic_graph)
+    net.add_handler("HISTORICGRAPH", handle_historic_graph)
     net_per_sock[sock] = net
     sock.settimeout(0.5)
     while True:
