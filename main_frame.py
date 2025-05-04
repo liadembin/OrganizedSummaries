@@ -41,9 +41,10 @@ class MainFrame(wx.Frame):
         self.listening_thread.start()
         self.html_content = ""  # To store HTML content
         self.awaiting_update = False
+        self.cnt = 0 
         # Main panel
         panel = wx.Panel(self)
-
+        self.last_char = ' '
         # Layout
         vbox = wx.BoxSizer(wx.VERTICAL)
 
@@ -89,6 +90,7 @@ class MainFrame(wx.Frame):
         editor_sizer = wx.BoxSizer(wx.VERTICAL)
         self.editor = wx.TextCtrl(self.editor_panel, style=wx.TE_MULTILINE)
         self.editor.Bind(wx.EVT_TEXT, self.on_text_input)
+        self.editor.Bind(wx.EVT_CHAR, self.on_char)
         refresh_button = wx.Button(self.editor_panel, label="Refresh HTML View")
         refresh_button.Bind(wx.EVT_BUTTON, self.on_refresh_html)
         editor_sizer.Add(self.editor, proportion=1, flag=wx.EXPAND | wx.ALL, border=5)
@@ -212,12 +214,14 @@ class MainFrame(wx.Frame):
             if not events:
                 wx.MessageBox("No events found.", "Info", wx.OK | wx.ICON_INFORMATION)
                 return
+            if self.events_dialog:
+                self.events_dialog.Destroy()
 
             # Show events dialog
-            self.events_dialog = EventsDialog(events, self, self.net)
+            self.events_dialog = EventsDialog(events, self, self.net,debug=True)
             self.events_dialog.ShowModal()
             self.events_dialog.Destroy()
-
+            self.events_dialog = None
         wx.CallAfter(show_events)
 
     def handle_event_success(self, *params, net):
@@ -424,6 +428,10 @@ class MainFrame(wx.Frame):
             return  # print("Is proccesing, not sending another")
         if self.is_update_throttled():
             return
+        if self.cnt < 3 and self.last_char != ' ':
+            self.cnt += 1 
+            return
+        self.cnt = 0
         with self.update_lock:
             # old_text = self.prev_content
             # new_text = self.editor.GetValue()
@@ -438,7 +446,7 @@ class MainFrame(wx.Frame):
 
             # Detect if content has actually changed
             if old_text == new_text:
-                # print("No Changes")
+                print("No Changes")
                 return self.send_changes([], False)
 
             # Use advanced diff algorithm
@@ -597,7 +605,12 @@ class MainFrame(wx.Frame):
             self.update_html_view()
 
         dialog.Destroy()
-
+    def on_char(self, event):
+        keycode = event.GetKeyCode()
+        if 32 <= keycode <= 126:  # Printable ASCII
+            self.last_char = chr(keycode)
+            print("Current char:", self.last_char)
+        event.Skip()
     def on_text_input(self, event):
         # Store current position and content
         current_pos = self.editor.GetInsertionPoint()
@@ -612,6 +625,7 @@ class MainFrame(wx.Frame):
         # Adjust for newlines
         text_pos -= 1 * cont.count("\n", 0, text_pos)
         if cont[text_pos] != "\n":
+            # print("Re rendering")
             self.update_html_view()
             return
         prev_back_n = cont.rfind("\n", 0, text_pos - 1)
@@ -622,6 +636,7 @@ class MainFrame(wx.Frame):
         # if line.startswith("###"):
         # print("Found special line: ", line)
         # print("That's the special!!!!!!!!!!!")
+        # print("Re rendering")
         self.update_html_view()
 
     def on_refresh_html(self, event):

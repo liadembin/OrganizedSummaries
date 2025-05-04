@@ -1,6 +1,6 @@
 import wx
-
-
+from dataclasses import dataclass
+from datetime import datetime
 class SummaryCarousel(wx.Dialog):
     def __init__(self, summaries, net, parent):
         super().__init__(None, title="Summaries Carousel", size=(800, 600))
@@ -193,3 +193,54 @@ class SummaryCarousel(wx.Dialog):
 
     def on_close(self, event):
         self.Close()
+
+@dataclass
+class MockSummary:
+    id: int
+    shareLink: str
+    ownerId: str
+    createTime: datetime
+    content: str = "This is a sample summary content with enough text to demonstrate the content preview functionality. It should be long enough to test the truncation feature which happens at 300 characters. This mock content is designed to simulate a real summary that would appear in the carousel, allowing us to see how the text wrapping and display would work in a real world scenario."
+    path_to_summary: str = "/path/to/summary"
+
+
+class MockNetwork:
+    def send_message(self, message):
+        print(f"Network message sent: {message}")
+    
+    def build_message(self, command, params):
+        return f"{command}: {', '.join(params)}"
+if __name__ == "__main__":
+    app = wx.App()
+    
+    # Create mock data
+    mock_summaries = [
+        MockSummary(
+            id=1,
+            shareLink="Summary 1: Project Overview",
+            ownerId="user123",
+            createTime=datetime(2025, 5, 1, 12, 30, 45)
+        ),
+        MockSummary(
+            id=2,
+            shareLink="Summary 2: Research Findings",
+            ownerId="user456",
+            createTime=datetime(2025, 5, 2, 9, 15, 22),
+            content="Different content for the second summary. This demonstrates how the carousel can switch between different summary objects and display their unique content."
+        ),
+        MockSummary(
+            id=3,
+            shareLink="Summary 3: Action Items",
+            ownerId="user789",
+            createTime=datetime(2025, 5, 3, 14, 45, 0),
+            content="A third summary with distinct content to show carousel navigation. Users can navigate between summaries using the arrow buttons."
+        )
+    ]
+    
+    # Create and show the dialog
+    mock_network = MockNetwork()
+    dialog = SummaryCarousel(mock_summaries, mock_network, None)
+    dialog.ShowModal()
+    dialog.Destroy()
+    
+    app.MainLoop()

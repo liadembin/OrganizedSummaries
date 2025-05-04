@@ -38,9 +38,10 @@ class EventsDialog(wx.Dialog):
         self.service = None
 
         # Calendar navigation variables
-        self.current_month = datetime.datetime.now().month
-        self.current_year = datetime.datetime.now().year
-        self.selected_date = datetime.datetime.now().date()
+        now = datetime.datetime.now()
+        self.current_month = now.month
+        self.current_year = now.year
+        self.selected_date = now.date()
         self.day_buttons = []  # Buttons/Panels representing days
         self.events_by_date = {}  # Cache events grouped by date
 
@@ -109,12 +110,12 @@ class EventsDialog(wx.Dialog):
         gcal_button.Bind(wx.EVT_BUTTON, self.on_import_gcal)
 
         # Save to Server button
-        save_button = wx.Button(panel, label="Save Events to Server")
-        save_button.Bind(wx.EVT_BUTTON, self.on_save_to_server)
-
+        # save_button = wx.Button(panel, label="Save Events to Server")
+        # save_button.Bind(wx.EVT_BUTTON, self.on_save_to_server)
+        #
         top_button_sizer.Add(add_event_button, flag=wx.RIGHT, border=10)
         top_button_sizer.Add(gcal_button, flag=wx.RIGHT, border=10)
-        top_button_sizer.Add(save_button)
+        # top_button_sizer.Add(save_button)
         main_sizer.Add(top_button_sizer, flag=wx.EXPAND | wx.ALL, border=10)
 
         # --- Calendar Section ---
@@ -1186,103 +1187,114 @@ class EventsDialog(wx.Dialog):
     def on_import_gcal(self, event):
         """Handle Google Calendar import button click"""
         self.log_event("Import from Google Calendar button clicked.")
-
-        # Use wx.BusyInfo to show a simple busy message without blocking interaction
-        busy_info = wx.BusyInfo(
-            "Connecting to Google Calendar and fetching events...", parent=self
+        
+        # Create a progress dialog that doesn't block the UI
+        progress_dialog = wx.ProgressDialog(
+            "Google Calendar Import",
+            "Connecting to Google Calendar and fetching events...",
+            maximum=100,
+            parent=self,
+            style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE
         )
-
+        
+        # Update to show it's working (indeterminate progress)
+        progress_dialog.Pulse()
+        
         # Define the thread function
         def import_thread():
             try:
                 new_events = self.fetch_google_events()
                 # Use CallAfter to interact with UI from the worker thread
-                wx.CallAfter(busy_info.__del__)  # Dismiss BusyInfo
+                wx.CallAfter(progress_dialog.Destroy)  # Properly close the dialog
                 wx.CallAfter(self.show_imported_events, new_events)
             except Exception as e:
-                wx.CallAfter(
-                    busy_info.__del__
-                )  # Ensure BusyInfo is dismissed on error too
+                wx.CallAfter(progress_dialog.Destroy)  # Ensure dialog is closed on error
                 self.log_event(f"Error in import thread: {e}")
                 # Show error message in the main thread
                 wx.CallAfter(
                     self.show_error, f"Error importing Google events: {str(e)}"
                 )
-
+        
         # Start the thread
         thread = threading.Thread(target=import_thread)
         thread.daemon = True  # Allow program to exit even if thread is running
         thread.start()
         self.log_event("Google import thread started.")
-
+        
+        # Allow UI updates while waiting
+        wx.Yield()
+    
     def show_imported_events(self, imported_events):
         """Display imported events and ask for confirmation"""
-        self.log_event(
-            f"Showing {len(imported_events)} imported events for confirmation."
-        )
-        if not imported_events:
-            wx.MessageBox(
-                "No new events found in your Google Calendar for the specified period.",
-                "No Events Found",
-                wx.OK | wx.ICON_INFORMATION,
-                self,
+        try:
+            self.log_event(
+                f"Showing {len(imported_events)} imported events for confirmation."
             )
-            return
+            if not imported_events:
+                wx.MessageBox(
+                    "No new events found in your Google Calendar for the specified period.",
+                    "No Events Found",
+                    wx.OK | wx.ICON_INFORMATION,
+                    self,
+                )
+                return
 
-        dialog = wx.Dialog(
-            self, title="Confirm Google Calendar Import", size=(500, 400)
-        )
-        panel = wx.Panel(dialog)
-        vbox = wx.BoxSizer(wx.VERTICAL)
-
-        vbox.Add(
-            wx.StaticText(
-                panel, label="Add the following events from Google Calendar?"
-            ),
-            flag=wx.ALL,
-            border=10,
-        )
-
-        event_list = wx.ListCtrl(panel, style=wx.LC_REPORT)
-        event_list.InsertColumn(0, "Title", width=250)
-        event_list.InsertColumn(1, "Date & Time", width=180)
-
-        for i, event in enumerate(imported_events):
-            index = event_list.InsertItem(i, event["event_title"])
-            event_list.SetItem(index, 1, event["event_date"].strftime("%Y-%m-%d %H:%M"))
-
-        vbox.Add(event_list, proportion=1, flag=wx.EXPAND | wx.ALL, border=10)
-
-        btn_sizer = wx.StdDialogButtonSizer()
-        import_btn = wx.Button(panel, wx.ID_OK, label="Add These Events")
-        cancel_btn = wx.Button(panel, wx.ID_CANCEL, label="Cancel")
-        btn_sizer.AddButton(import_btn)
-        btn_sizer.AddButton(cancel_btn)
-        btn_sizer.Realize()
-
-        vbox.Add(btn_sizer, flag=wx.ALIGN_CENTER | wx.ALL, border=10)
-        panel.SetSizer(vbox)
-        panel.Fit()
-        dialog.Fit()
-        dialog.Centre()
-
-        if dialog.ShowModal() == wx.ID_OK:
-            self.log_event(f"User confirmed import of {len(imported_events)} events.")
-            # Add events to our list - they already have id = -1
-            self.events.extend(imported_events)
-            self.organize_events_by_date()
-            self.setup_ui()  # Refresh UI fully
-            wx.MessageBox(
-                f"Added {len(imported_events)} events. Remember to 'Save Events to Server'.",
-                "Import Successful",
-                wx.OK | wx.ICON_INFORMATION,
-                self,
+            dialog = wx.Dialog(
+                self, title="Confirm Google Calendar Import", size=(500, 400)
             )
-        else:
-            self.log_event("User cancelled Google event import.")
+            panel = wx.Panel(dialog)
+            vbox = wx.BoxSizer(wx.VERTICAL)
 
-        dialog.Destroy()
+            vbox.Add(
+                wx.StaticText(
+                    panel, label="Add the following events from Google Calendar?"
+                ),
+                flag=wx.ALL,
+                border=10,
+            )
 
+            event_list = wx.ListCtrl(panel, style=wx.LC_REPORT)
+            event_list.InsertColumn(0, "Title", width=250)
+            event_list.InsertColumn(1, "Date & Time", width=180)
+
+            for i, event in enumerate(imported_events):
+                index = event_list.InsertItem(i, event["event_title"])
+                event_list.SetItem(index, 1, event["event_date"].strftime("%Y-%m-%d %H:%M"))
+
+            vbox.Add(event_list, proportion=1, flag=wx.EXPAND | wx.ALL, border=10)
+
+            btn_sizer = wx.StdDialogButtonSizer()
+            import_btn = wx.Button(panel, wx.ID_OK, label="Add These Events")
+            cancel_btn = wx.Button(panel, wx.ID_CANCEL, label="Cancel")
+            btn_sizer.AddButton(import_btn)
+            btn_sizer.AddButton(cancel_btn)
+            btn_sizer.Realize()
+
+            vbox.Add(btn_sizer, flag=wx.ALIGN_CENTER | wx.ALL, border=10)
+            panel.SetSizer(vbox)
+            panel.Fit()
+            dialog.Fit()
+            dialog.Centre()
+
+            if dialog.ShowModal() == wx.ID_OK:
+                self.log_event(f"User confirmed import of {len(imported_events)} events.")
+                # Add events to our list - they already have id = -1
+                self.events.extend(imported_events)
+                self.organize_events_by_date()
+                self.setup_ui()  # Refresh UI fully
+                wx.MessageBox(
+                    f"Added {len(imported_events)} events. Remember to 'Save Events to Server'.",
+                    "Import Successful",
+                    wx.OK | wx.ICON_INFORMATION,
+                    self,
+                )
+            else:
+                self.log_event("User cancelled Google event import.")
+
+            dialog.Destroy()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
     def show_error(self, message):
         """Show error message dialog."""
         self.log_event(f"Displaying error: {message}")
@@ -1368,7 +1380,7 @@ if __name__ == "__main__":
                 if "DELETE_SUCCESS" in self.handlers:
                     # Need to run handler slightly later to avoid UI recursion issues
                     wx.CallLater(
-                        100, self.handlers["DELETE_SUCCESS"], event_id
+                        100, self.handlers["DELETE_SUCCESS"], event_id,net=self
                     )  # Pass back the ID
 
             elif command == "ADDEVENT":
@@ -1388,7 +1400,7 @@ if __name__ == "__main__":
                 pickled_event = pickle.dumps(new_event)
                 encoded_event = base64.b64encode(pickled_event).decode()
                 if "ADD_SUCCESS" in self.handlers:
-                    wx.CallLater(100, self.handlers["ADD_SUCCESS"], encoded_event)
+                    wx.CallLater(100, self.handlers["ADD_SUCCESS"], encoded_event,net=self)
 
             elif command == "SAVE_EVENTS":
                 print(

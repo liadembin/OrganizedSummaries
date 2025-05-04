@@ -76,6 +76,8 @@ def handle_login(
     N_days_from_today = datetime.datetime.now() + datetime.timedelta(
         days=EVENT_DAY_REMIND
     )
+    print(N_days_from_today)
+    print(events)
     net.send_message(
         net.build_message(
             "LOGIN_SUCCESS" if loged else "LOGIN_FAIL",
@@ -639,15 +641,21 @@ def thread_main(sock, addr, crypt):
     db_manager.id_per_sock = id_per_sock
     # with open("db_config.json", "rb") as f:
     #     db_manager.connect_to_db(json.loads(f.read()))
-    db_manager.connect_to_db(
-        {
-            "host": os.getenv("DB_HOST"),
-            "user": os.getenv("DB_USERNAME"),
-            "password": (os.getenv("DB_PASSWORD")),
-            "database": os.getenv("DB_NAME"),
-            "port": os.getenv("DB_PORT"),
-        }
-    )
+    if USE_MYSQL:
+        db_manager.connect_to_db(
+            {
+                "host": os.getenv("DB_HOST"),
+                "user": os.getenv("DB_USERNAME"),
+                "password": (os.getenv("DB_PASSWORD")),
+                "database": os.getenv("DB_NAME"),
+                "port": os.getenv("DB_PORT"),
+            }
+        )
+    else: 
+        db_manager.connect_to_sqlite({
+            "db_type":"sqlite",
+            'database': "dbconved.db"
+        })
     net.add_handler("EXIT", lambda: True)
     net.add_handler("LOGIN", handle_login)
     net.add_handler("REGISTER", handle_register)
@@ -933,13 +941,17 @@ def main(sock, crypt, t1):
     for th in threads:
         th.join()
 
-
+USE_MYSQL = False
 if __name__ == "__main__":
     print("Done importing")
     t1 = time.time()
     # read a .env file
     dotenv.load_dotenv()
-    if not all(
+    if USE_MYSQL:
+        print("Using mysql")
+    else:
+        print("Using sqlite")
+    if USE_MYSQL and not all(
         [
             os.getenv("DB_PASSWORD"),
             os.getenv("DB_USERNAME"),
@@ -950,6 +962,9 @@ if __name__ == "__main__":
     ):
         print("make sure all env variables are defined.")
         exit()
+    elif not USE_MYSQL and not os.path.isfile("dbconved.db"):
+            print("Create the db")
+            exit()
 
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 12345
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

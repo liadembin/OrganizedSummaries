@@ -7,7 +7,7 @@ from Crypto.Random import get_random_bytes
 from Crypto.Util.Padding import pad, unpad
 import hashlib
 from typing import Tuple, Optional
-
+import pytest
 PRINT_PLAIN = False
 # import logging
 
@@ -33,7 +33,7 @@ class CryptManager:
     def encrypt_data(self, data: bytes) -> Tuple[bytes, bytes]:
         # encrypt using AES Cbc
         if self.aes_key is None:
-            raise ValueError("AES key is not set.")
+            raise ValueError("AES Key is not set.")
         iv = get_random_bytes(16)
         aes_cipher = AES.new(self.aes_key, AES.MODE_CBC, iv)
         # print("IV: ", iv, "KEY: ", self.aes_key, "DATA: ", data)
@@ -79,161 +79,192 @@ class CryptManager:
     def get_public_key(self) -> str:
         return base64.b64encode(self.rsa_key.publickey().export_key()).decode()
 
-
-def run_test_case(description, func, expected_success, *args, **kwargs):
-    """
-    Runs a test case and prints the result in color.
-    If `expected_success` is True, it checks for success.
-    If `expected_success` is False, it expects a failure.
-    """
-    try:
-        print(colored(f"Running: {description}", "blue"))
-        result = func(*args, **kwargs)
-
-        if expected_success:
-            print(colored(f"✅ PASS: {description}", "green"))
-            print(f"Result: {result}\n")
-        else:
-            print(colored(f"❌ FAIL: {description} (Unexpected success)", "red"))
-            print(f"Result: {result}\n")
-
-    except Exception as e:
-        if expected_success:
-            print(colored(f"❌ FAIL: {description}", "red"))
-            print("Error:", traceback.format_exc())
-        else:
-            print(colored(f"✅ PASS: {description} (Expected failure)", "green"))
-        print()
+@pytest.fixture
+def crypt_manager():
+    """Fixture to create a fresh CryptManager instance for each test."""
+    return CryptManager()
 
 
-class TestCryptManager(unittest.TestCase):
-    def setUp(self):
-        # This will run before each test
-        self.manager = CryptManager()
+@pytest.fixture
+def sample_data():
+    """Fixture to provide common test data."""
+    return {
+        "password": "password123",
+        "salt": get_random_bytes(16),
+        "paper": get_random_bytes(16),
+        "data": b"Secret data"
+    }
 
-    def test_hash_pass_valid(self):
-        password = "password123"
-        salt = get_random_bytes(16)
-        paper = get_random_bytes(16)
-        hashed_password = self.manager.hash_pass(password, salt, paper)
 
-        # Check if hashing is correct by using the same inputs
-        if hashed_password != self.manager.hash_pass(password, salt, paper):
-            log_failure("Failed hash comparison (valid inputs).")
-            self.assertTrue(False)
-        else:
-            log_success("Hashing test passed (valid inputs).")
+class TestHashFunctions:
+    """Tests for password hashing functions."""
 
-    def test_hash_pass_invalid(self):
-        password = "password123"
-        salt = get_random_bytes(16)
-        paper = get_random_bytes(16)
-        invalid_paper = get_random_bytes(16)
+    def test_hash_pass_consistent(self, crypt_manager, sample_data):
+        """Test that hash_pass produces consistent results with same inputs."""
+        hashed1 = crypt_manager.hash_pass(
+            sample_data["password"], 
+            sample_data["salt"], 
+            sample_data["paper"]
+        )
+        
+        hashed2 = crypt_manager.hash_pass(
+            sample_data["password"], 
+            sample_data["salt"], 
+            sample_data["paper"]
+        )
+        
+        assert hashed1 == hashed2, "Hash function should be deterministic"
 
-        # Check invalid paper should fail
-        if self.manager.hash_pass(password, salt, paper) == self.manager.hash_pass(
-            password, salt, invalid_paper
-        ):
-            log_failure("Failed hash comparison (invalid paper).")
-            self.assertTrue(False)
-        else:
-            log_success("Hashing test passed (invalid inputs).")
+    def test_hash_pass_different_with_different_inputs(self, crypt_manager, sample_data):
+        """Test that hash_pass produces different results with different inputs."""
+        hashed1 = crypt_manager.hash_pass(
+            sample_data["password"], 
+            sample_data["salt"], 
+            sample_data["paper"]
+        )
+        
+        # Different password
+        hashed2 = crypt_manager.hash_pass(
+            "different_password", 
+            sample_data["salt"], 
+            sample_data["paper"]
+        )
+        
+        assert hashed1 != hashed2, "Different passwords should produce different hashes"
 
-    def test_encrypt_data_valid(self):
-        self.manager.aes_key = get_random_bytes(16)  # Set AES key for encryption
-        data = b"Secret data"
-        encrypted_data, iv = self.manager.encrypt_data(data)
+        # Different salt
+        different_salt = get_random_bytes(16)
+        hashed3 = crypt_manager.hash_pass(
+            sample_data["password"], 
+            different_salt, 
+            sample_data["paper"]
+        )
+        
+        assert hashed1 != hashed3, "Different salts should produce different hashes"
 
-        # Check if decryption works
-        decrypted_data = self.manager.decrypt_data(encrypted_data, iv)
-        if decrypted_data != data:
-            log_failure("Failed encryption-decryption test (valid AES key).")
-            self.assertTrue(False)
-        else:
-            log_success("Encryption-decryption test passed (valid AES key).")
+        # Different paper
+        different_paper = get_random_bytes(16)
+        hashed4 = crypt_manager.hash_pass(
+            sample_data["password"], 
+            sample_data["salt"], 
+            different_paper
+        )
+        
+        assert hashed1 != hashed4, "Different papers should produce different hashes"
 
-    def test_encrypt_data_no_aes_key(self):
-        # AES key not set, should raise ValueError
-        data = b"Secret data"
-        try:
-            self.manager.encrypt_data(data)
-            log_failure("Expected ValueError when AES key is not set.")
-            self.assertTrue(False)
-        except ValueError:
-            log_success("AES key not set test passed.")
+    def test_check_hash_valid(self, crypt_manager, sample_data):
+        """Test that check_hash validates correct passwords."""
+        hashed = crypt_manager.hash_pass(
+            sample_data["password"], 
+            sample_data["salt"], 
+            sample_data["paper"]
+        )
+        
+        assert crypt_manager.check_hash(
+            sample_data["password"], 
+            hashed, 
+            sample_data["salt"], 
+            sample_data["paper"]
+        ), "check_hash should return True for valid password"
 
-    def test_decrypt_data_no_aes_key(self):
-        # AES key not set, should raise ValueError
-        data = b"Secret data"
+    def test_check_hash_invalid(self, crypt_manager, sample_data):
+        """Test that check_hash rejects wrong passwords."""
+        hashed = crypt_manager.hash_pass(
+            sample_data["password"], 
+            sample_data["salt"], 
+            sample_data["paper"]
+        )
+        
+        assert not crypt_manager.check_hash(
+            "wrong_password", 
+            hashed, 
+            sample_data["salt"], 
+            sample_data["paper"]
+        ), "check_hash should return False for invalid password"
+
+
+class TestAESEncryption:
+    """Tests for AES encryption functions."""
+
+    def test_generate_aes_key(self, crypt_manager):
+        """Test that generate_aes_key creates a valid key."""
+        crypt_manager.generate_aes_key()
+        assert crypt_manager.aes_key is not None, "AES key should be set"
+        assert len(crypt_manager.aes_key) == 16, "AES key should be 16 bytes"
+
+    def test_encrypt_decrypt_data(self, crypt_manager, sample_data):
+        """Test AES encryption and decryption cycle."""
+        crypt_manager.generate_aes_key()
+        encrypted_data, iv = crypt_manager.encrypt_data(sample_data["data"])
+        
+        # Verify encrypted data is different from original
+        assert encrypted_data != sample_data["data"], "Encrypted data should differ from original"
+        
+        # Verify decryption returns original data
+        decrypted_data = crypt_manager.decrypt_data(encrypted_data, iv)
+        assert decrypted_data == sample_data["data"], "Decrypted data should match original"
+
+    def test_encrypt_data_no_key(self, crypt_manager, sample_data):
+        """Test that encrypt_data raises ValueError when AES key is not set."""
+        with pytest.raises(ValueError, match="AES Key is not set."):
+            crypt_manager.encrypt_data(sample_data["data"])
+
+    def test_decrypt_data_no_key(self, crypt_manager, sample_data):
+        """Test that decrypt_data raises ValueError when AES key is not set."""
         iv = get_random_bytes(16)
+        with pytest.raises(ValueError, match="AES Key is not set."):
+            crypt_manager.decrypt_data(sample_data["data"], iv)
+
+
+class TestRSAEncryption:
+    """Tests for RSA encryption functions."""
+
+    def test_rsa_encryption_decryption(self, crypt_manager, sample_data):
+        """Test RSA encryption and decryption cycle."""
+        public_key = crypt_manager.rsa_key.publickey().export_key()
+        encrypted_data = crypt_manager.encrypt_rsa(sample_data["data"], public_key)
+        
+        # Verify encrypted data is different from original
+        assert encrypted_data != sample_data["data"], "RSA encrypted data should differ from original"
+        
+        # Verify decryption returns original data
+        decrypted_data = crypt_manager.decrypt_rsa(encrypted_data)
+        assert decrypted_data == sample_data["data"], "RSA decrypted data should match original"
+
+    def test_encrypt_rsa_invalid_key(self, crypt_manager, sample_data):
+        """Test that encrypt_rsa raises an error with invalid key."""
+        invalid_key = b"invalid_key_data"
+        with pytest.raises(ValueError):
+            crypt_manager.encrypt_rsa(sample_data["data"], invalid_key)
+
+    def test_get_public_key(self, crypt_manager):
+        """Test that get_public_key returns a valid base64 encoded key."""
+        public_key = crypt_manager.get_public_key()
+        
+        # Verify it's a non-empty string
+        assert isinstance(public_key, str), "Public key should be a string"
+        assert public_key, "Public key should not be empty"
+        
+        # Verify it can be decoded as base64
         try:
-            self.manager.decrypt_data(data, iv)
-            log_failure("Expected ValueError when AES key is not set.")
-            self.assertTrue(False)
-        except ValueError:
-            log_success("AES key not set test passed.")
-
-    def test_encrypt_rsa_valid(self):
-        public_key = self.manager.rsa_key.publickey().export_key()
-        data = b"Secret data"
-        encrypted_data = self.manager.encrypt_rsa(data, public_key)
-
-        # Check if decryption with private key works
-        decrypted_data = self.manager.decrypt_rsa(encrypted_data)
-        if decrypted_data != data:
-            log_failure("Failed RSA encryption-decryption test (valid RSA key).")
-            self.assertTrue(False)
-        else:
-            log_success("RSA encryption-decryption test passed (valid RSA key).")
-
-    def test_encrypt_rsa_invalid_key(self):
-        invalid_public_key = get_random_bytes(2048)  # Invalid key
-        data = b"Secret data"
-        try:
-            self.manager.encrypt_rsa(data, invalid_public_key)
-            log_failure("Expected error with invalid RSA key.")
-            self.assertTrue(False)
-        except ValueError:
-            log_success("RSA encryption with invalid key test passed.")
-
-    def test_generate_random_bytes_valid(self):
-        length = 16
-        random_bytes = self.manager.generate_random_bytes(length)
-
-        # Check if the length of random bytes is correct
-        if len(random_bytes) != length:
-            log_failure(f"Failed random byte generation test (length {length}).")
-            self.assertTrue(False)
-        else:
-            log_success(f"Random byte generation test passed (length {length}).")
-
-    def test_check_hash_valid(self):
-        password = "password123"
-        salt = get_random_bytes(16)
-        paper = get_random_bytes(16)
-        hashed_password = self.manager.hash_pass(password, salt, paper)
-
-        # Check if the check_hash method works
-        if not self.manager.check_hash(password, hashed_password, salt, paper):
-            log_failure("Failed check_hash (valid password).")
-            self.assertTrue(False)
-        else:
-            log_success("check_hash test passed (valid password).")
-
-    def test_check_hash_invalid(self):
-        password = "password123"
-        salt = get_random_bytes(16)
-        paper = get_random_bytes(16)
-        wrong_password = "wrongpassword"
-        hashed_password = self.manager.hash_pass(password, salt, paper)
-
-        # Check if the check_hash method fails with incorrect password
-        if self.manager.check_hash(wrong_password, hashed_password, salt, paper):
-            log_failure("Failed check_hash (invalid password).")
-            self.assertTrue(False)
-        else:
-            log_success("check_hash test passed (invalid password).")
+            decoded = base64.b64decode(public_key)
+            assert decoded, "Decoded public key should not be empty"
+        except Exception as e:
+            pytest.fail(f"Failed to decode public key as base64: {e}")
 
 
-if __name__ == "__main__":
-    unittest.main()
+class TestUtilityFunctions:
+    """Tests for utility functions."""
+
+    def test_generate_random_bytes(self, crypt_manager):
+        """Test generate_random_bytes produces correct length output."""
+        lengths = [8, 16, 32, 64]
+        
+        for length in lengths:
+            random_bytes = crypt_manager.generate_random_bytes(length)
+            assert len(random_bytes) == length, f"Random bytes should be {length} bytes long"
+            
+            # Generate another set and verify they're different (extremely unlikely to be the same)
+            another_random = crypt_manager.generate_random_bytes(length)
+            assert random_bytes != another_random, "Random bytes should be different on each call"
+
