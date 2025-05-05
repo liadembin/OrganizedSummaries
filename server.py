@@ -19,11 +19,6 @@ from OCRManager import ExtractText
 import pickle
 import threading
 from typing import Dict
-from google_auth_oauthlib.flow import Flow
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
-import secrets
-
 SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 CLIENT_SECRETS_FILE = "credentials.json"
 API_SERVICE_NAME = "calendar"
@@ -149,7 +144,7 @@ def handle_save(
         db_manager.insert_summary(
             title, summary, db_manager.get_id_per_sock(net.sock), font
         )
-    net.send_message(net.build_message("SAVE_SUCCESS", ["IT WAS CALLED"]))
+    net.send_message(net.build_message("SAVE_SUCCESS", [""]))
     return False
 
 
@@ -253,6 +248,15 @@ def handle_end(db_manager, path, net: networkManager.NetworkManager) -> bool:
 
 
 def handle_ocr(db_manager, path, net: networkManager.NetworkManager) -> bool:
+    # in real life we would have to prevent the RFI LFI
+    # but for now we just assume the path is safe
+    if not db_manager.get_is_sock_logged(net.sock):
+        print("NOT logged in")
+        net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
+        return True
+    if "." in path or ".." in path or path.startswith("/") or path.startswith("\\"):
+        net.send_message(net.build_message("ERROR", ["INVALID PATH"]))
+        return True
     real_path = f"./data/{db_manager.get_id_per_sock(net.sock)}/tmp/{path}"
     text = ExtractText(real_path)
     net.send_message(net.build_message("FILECONTENT", [text]))
@@ -651,11 +655,8 @@ def thread_main(sock, addr, crypt):
                 "port": os.getenv("DB_PORT"),
             }
         )
-    else: 
-        db_manager.connect_to_sqlite({
-            "db_type":"sqlite",
-            'database': "dbconved.db"
-        })
+    else:
+        db_manager.connect_to_sqlite({"db_type": "sqlite", "database": "dbconved.db"})
     net.add_handler("EXIT", lambda: True)
     net.add_handler("LOGIN", handle_login)
     net.add_handler("REGISTER", handle_register)
@@ -941,6 +942,7 @@ def main(sock, crypt, t1):
     for th in threads:
         th.join()
 
+
 USE_MYSQL = False
 if __name__ == "__main__":
     print("Done importing")
@@ -963,8 +965,8 @@ if __name__ == "__main__":
         print("make sure all env variables are defined.")
         exit()
     elif not USE_MYSQL and not os.path.isfile("dbconved.db"):
-            print("Create the db")
-            exit()
+        print("Create the db")
+        exit()
 
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 12345
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

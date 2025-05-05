@@ -238,7 +238,7 @@ class MainFrame(wx.Frame):
 
     def on_file_content(self, *params, net):
         def update_editor():
-            self.editor.AppendText(params[1])
+            self.editor.AppendText("~".join(params[1:]))
             self.update_html_view()
 
         wx.CallAfter(update_editor)
@@ -283,7 +283,7 @@ class MainFrame(wx.Frame):
                 wx.OK | wx.ICON_ERROR,
             )
 
-    def on_summary_recived(self, *params, net):
+    def on_summary_recived(self,s, *params, net):
         def update_summary():
             summ = params[0]
             start, end = self.editor.GetSelection()
@@ -321,7 +321,7 @@ class MainFrame(wx.Frame):
         self.net.sock.settimeout(0.5)
         while True:
             try:
-                # Non-blocking receive with better error management
+                # Non-blocking receive with better error managementserver
                 found_any = self.net.recv_handle_args(self)
 
                 if not found_any:
