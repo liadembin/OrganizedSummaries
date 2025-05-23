@@ -1,11 +1,13 @@
-import login_frame
-import wx
-import socket
-import cryptManager
-import sys
-import networkManager
 import base64
+import socket
+import sys
+
+import wx
 from wx import adv
+
+import cryptManager
+import login_frame
+import networkManager
 
 
 def handle_key_exchange(sock: socket.socket):

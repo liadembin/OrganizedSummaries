@@ -1,11 +1,12 @@
 import base64
+import os
+import select
+import threading
+import time
 from socket import socket
 from typing import Callable, Dict, List
-import select
-import time
-import os
+
 from cryptManager import CryptManager
-import threading
 
 
 class NetworkManager:
@@ -247,11 +248,14 @@ class NetworkManager:
             self.sock.send(self.build_message("ENCODED", arr, do_size=True).encode())
             print(f"SEND>>>{message[: min(100, len(message))]}")
 
+
 # Place this at the bottom of your file or in a separate test file
 
-import pytest
-from unittest.mock import Mock, MagicMock
 import base64
+from unittest.mock import MagicMock, Mock
+
+import pytest
+
 
 # === Sample Mock CryptManager ===
 class MockCryptManager:
@@ -268,24 +272,26 @@ class MockCryptManager:
 @pytest.fixture
 def mock_sock():
     sock = Mock()
-    sock.recv = MagicMock(side_effect=[
-        b"0000000032",  # Length prefix (32 bytes)
-        b"ENCODED~" + base64.b64encode(b"test")[::-1] + b"~" + base64.b64encode(b"mockiv")
-    ])
+    sock.recv = MagicMock(
+        side_effect=[
+            b"0000000032",  # Length prefix (32 bytes)
+            b"ENCODED~"
+            + base64.b64encode(b"test")[::-1]
+            + b"~"
+            + base64.b64encode(b"mockiv"),
+        ]
+    )
     sock.send = MagicMock()
     return sock
 
 
 @pytest.fixture
 def net_mgr(mock_sock):
-    return NetworkManager(
-        sock=mock_sock,
-        crypt=MockCryptManager(),
-        handlers={}
-    )
+    return NetworkManager(sock=mock_sock, crypt=MockCryptManager(), handlers={})
 
 
 # === Unit Tests ===
+
 
 def test_build_message_without_size(net_mgr):
     msg = net_mgr.build_message("CODE", ["param1", "param2"])
@@ -317,10 +323,14 @@ def test_send_message_encodes_correctly(net_mgr, mock_sock):
 
 def test_recv_message_decodes_correctly(net_mgr):
     # We will override recv_message_plain to return a known encoded message
-    encoded = net_mgr.build_message("ENCODED", [
-        base64.b64encode(b"dlrow olleh").decode(),  # reversed 'hello world'
-        base64.b64encode(b"mockiv").decode()
-    ], do_size=False).encode()
+    encoded = net_mgr.build_message(
+        "ENCODED",
+        [
+            base64.b64encode(b"dlrow olleh").decode(),  # reversed 'hello world'
+            base64.b64encode(b"mockiv").decode(),
+        ],
+        do_size=False,
+    ).encode()
 
     net_mgr.recv_message_plain = lambda: encoded
     result = net_mgr.recv_message()
@@ -331,11 +341,11 @@ def test_add_handler_and_call(net_mgr):
     called = {}
 
     def mock_handler(p1, net=None):
-        called['p1'] = p1
+        called["p1"] = p1
 
     net_mgr.add_handler("TEST", mock_handler)
     net_mgr.handlers["TEST"]("value", net=net_mgr)
-    assert called['p1'] == "value"
+    assert called["p1"] == "value"
 
 
 def test_add_handlers_bulk(net_mgr):
@@ -349,7 +359,5 @@ def test_add_handlers_bulk(net_mgr):
 # === Colored CLI Runner ===
 if __name__ == "__main__":
     import sys
+
     sys.exit(pytest.main(["-v", "--color=yes", "--tb=short"]))
-
-
-

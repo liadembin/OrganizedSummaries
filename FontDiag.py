@@ -1,7 +1,8 @@
-import wx
 import os
 import tempfile
 import urllib.request
+
+import wx
 
 
 class FontSelectorDialog(wx.Dialog):

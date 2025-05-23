@@ -1,7 +1,9 @@
-import wx
-import pickle
 import base64
-from typing import List, Any, Tuple
+import pickle
+from typing import Any, List, Tuple
+
+import wx
+
 import networkManager
 
 
@@ -31,20 +33,29 @@ class LoginFrame(wx.Frame):
 
         # Title
         title = wx.StaticText(panel, label="Login to Your Account")
-        title_font = wx.Font(14, wx.FONTFAMILY_SWISS, 
-                              wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD)
+        title_font = wx.Font(
+            14, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD
+        )
         title.SetFont(title_font)
         vbox.Add(title, flag=wx.ALIGN_CENTER | wx.TOP, border=20)
 
         # Username
         vbox.AddStretchSpacer(1)
-        vbox.Add(self._make_labeled_ctrl(panel, "Username:", wx.TextCtrl),
-                 flag=wx.EXPAND | wx.LEFT | wx.RIGHT, border=40)
+        vbox.Add(
+            self._make_labeled_ctrl(panel, "Username:", wx.TextCtrl),
+            flag=wx.EXPAND | wx.LEFT | wx.RIGHT,
+            border=40,
+        )
         vbox.AddStretchSpacer(1)
 
         # Password
-        vbox.Add(self._make_labeled_ctrl(panel, "Password:", wx.TextCtrl, style=wx.TE_PASSWORD),
-                 flag=wx.EXPAND | wx.LEFT | wx.RIGHT, border=40)
+        vbox.Add(
+            self._make_labeled_ctrl(
+                panel, "Password:", wx.TextCtrl, style=wx.TE_PASSWORD
+            ),
+            flag=wx.EXPAND | wx.LEFT | wx.RIGHT,
+            border=40,
+        )
         vbox.AddStretchSpacer(1)
 
         # Buttons
@@ -65,7 +76,7 @@ class LoginFrame(wx.Frame):
         h = wx.BoxSizer(wx.HORIZONTAL)
         lbl = wx.StaticText(parent, label=label)
         ctrl = ctrl_cls(parent, style=style)
-        setattr(self, label.lower().rstrip(":" ) + "_input", ctrl)
+        setattr(self, label.lower().rstrip(":") + "_input", ctrl)
         h.Add(lbl, flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=8)
         h.Add(ctrl, proportion=1)
         return h
@@ -85,8 +96,7 @@ class LoginFrame(wx.Frame):
 
         success, events = self.authenticate(username, password)
         if success:
-            wx.MessageBox("Login successful!", "Info",
-                          wx.OK | wx.ICON_INFORMATION)
+            wx.MessageBox("Login successful!", "Info", wx.OK | wx.ICON_INFORMATION)
             self.open_main_frame(username, events)
         else:
             wx.MessageBox(
@@ -96,9 +106,7 @@ class LoginFrame(wx.Frame):
             )
 
     def authenticate(self, username, password) -> Tuple[bool, List[Any]]:
-        self.net.send_message(
-            self.net.build_message("LOGIN", [username, password])
-        )
+        self.net.send_message(self.net.build_message("LOGIN", [username, password]))
         msg = self.net.recv_message()
         code = self.net.get_message_code(msg)
         params = self.net.get_message_params(msg)
@@ -106,7 +114,8 @@ class LoginFrame(wx.Frame):
         if "LOGIN_SUCCESS" in code:
             events = (
                 [pickle.loads(base64.b64decode(x)) for x in params]
-                if len(params) > 1 else []
+                if len(params) > 1
+                else []
             )
             return True, events
         return False, []
@@ -114,6 +123,7 @@ class LoginFrame(wx.Frame):
     def open_main_frame(self, username, events):
         self.Hide()
         from main_frame import MainFrame  # delay import
+
         main_frame = MainFrame(self.net, username)
         if events:
             main_frame.show_upcoming_events(events)
@@ -138,22 +148,36 @@ class RegisterDialog(wx.Dialog):
 
         # Title
         title = wx.StaticText(panel, label="Create a New Account")
-        title_font = wx.Font(14, wx.FONTFAMILY_SWISS, 
-                              wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD)
+        title_font = wx.Font(
+            14, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD
+        )
         title.SetFont(title_font)
         vbox.Add(title, flag=wx.ALIGN_CENTER | wx.TOP, border=20)
 
         vbox.AddStretchSpacer(1)
 
         # Username / Password / Confirm
-        vbox.Add(self._make_labeled_ctrl(panel, "Username:", wx.TextCtrl),
-                 flag=wx.EXPAND | wx.LEFT | wx.RIGHT, border=40)
+        vbox.Add(
+            self._make_labeled_ctrl(panel, "Username:", wx.TextCtrl),
+            flag=wx.EXPAND | wx.LEFT | wx.RIGHT,
+            border=40,
+        )
         vbox.AddStretchSpacer(1)
-        vbox.Add(self._make_labeled_ctrl(panel, "Password:", wx.TextCtrl, style=wx.TE_PASSWORD),
-                 flag=wx.EXPAND | wx.LEFT | wx.RIGHT, border=40)
+        vbox.Add(
+            self._make_labeled_ctrl(
+                panel, "Password:", wx.TextCtrl, style=wx.TE_PASSWORD
+            ),
+            flag=wx.EXPAND | wx.LEFT | wx.RIGHT,
+            border=40,
+        )
         vbox.AddStretchSpacer(1)
-        vbox.Add(self._make_labeled_ctrl(panel, "Confirm Password:", wx.TextCtrl, style=wx.TE_PASSWORD),
-                 flag=wx.EXPAND | wx.LEFT | wx.RIGHT, border=40)
+        vbox.Add(
+            self._make_labeled_ctrl(
+                panel, "Confirm Password:", wx.TextCtrl, style=wx.TE_PASSWORD
+            ),
+            flag=wx.EXPAND | wx.LEFT | wx.RIGHT,
+            border=40,
+        )
 
         vbox.AddStretchSpacer(2)
 
@@ -168,7 +192,7 @@ class RegisterDialog(wx.Dialog):
         h = wx.BoxSizer(wx.HORIZONTAL)
         lbl = wx.StaticText(parent, label=label)
         ctrl = ctrl_cls(parent, style=style)
-        attr = label.lower().rstrip(":" ).replace(" ", "_") + "_input"
+        attr = label.lower().rstrip(":").replace(" ", "_") + "_input"
         setattr(self, attr, ctrl)
         h.Add(lbl, flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=8)
         h.Add(ctrl, proportion=1)
@@ -180,9 +204,7 @@ class RegisterDialog(wx.Dialog):
         confirm = self.confirm_password_input.GetValue()
 
         if password != confirm:
-            wx.MessageBox(
-                "Passwords do not match!", "Error", wx.OK | wx.ICON_ERROR
-            )
+            wx.MessageBox("Passwords do not match!", "Error", wx.OK | wx.ICON_ERROR)
             return
         if not is_valid_password(password):
             wx.MessageBox(
@@ -193,9 +215,7 @@ class RegisterDialog(wx.Dialog):
             )
             return
 
-        self.net.send_message(
-            self.net.build_message("REGISTER", [username, password])
-        )
+        self.net.send_message(self.net.build_message("REGISTER", [username, password]))
         msg = self.net.recv_message()
         code = self.net.get_message_code(msg)
         params = self.net.get_message_params(msg)
@@ -203,20 +223,19 @@ class RegisterDialog(wx.Dialog):
         if "REGISTER_SUCCESS" in code:
             wx.MessageBox(
                 "Registration successful! You can now log in.",
-                "Info", wx.OK | wx.ICON_INFORMATION
+                "Info",
+                wx.OK | wx.ICON_INFORMATION,
             )
             self.Close()
         else:
             wx.MessageBox(
-                f"Registration failed: {params}",
-                "Error", wx.OK | wx.ICON_ERROR
+                f"Registration failed: {params}", "Error", wx.OK | wx.ICON_ERROR
             )
 
 
 if __name__ == "__main__":
     app = wx.App(False)
-    net = networkManager.NetworkManager(None,None,None)
+    net = networkManager.NetworkManager(None, None, None)
     login = LoginFrame(net)
     login.Show()
     app.MainLoop()
-

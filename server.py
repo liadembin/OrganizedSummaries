@@ -1,35 +1,67 @@
+import base64
 import datetime
 import json
 import os
-from Crypto.PublicKey import RSA
-import socket
-import OCRManager
-import cryptManager
-import networkManager
-import sys
-import time
-from threading import Thread
-import base64
-import dotenv
-
-from dbManager import Summary, DbManager
-from OCRManager import ExtractText
-
 # from dbManager import DbManager
 import pickle
+import socket
+import sys
 import threading
-from typing import Dict
-SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
-CLIENT_SECRETS_FILE = "credentials.json"
-API_SERVICE_NAME = "calendar"
-API_VERSION = "v3"
+import time
+from dataclasses import dataclass
+from enum import Enum
+from threading import Thread
+from typing import Dict, Optional
+
+import dotenv
+from Crypto.PublicKey import RSA
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+
+import cryptManager
+import networkManager
+import OCRManager
+from dbManager import DbManager, Summary
+from OCRManager import ExtractText
+
 PEPPER = b"PEPPER"
 id_per_sock = {}
 ids_per_summary_id = {}
 net_per_sock = {}
-lock_per_sock: Dict[socket.socket, threading.Lock] = {}
-doc_changes_lock = threading.Lock()
+# lock_per_sock: Dict[socket.socket, threading.Lock] = {}
+# doc_changes_lock = threading.Lock()
+lock_per_doc = {}
 historic_id_per_sock = {}
+handlers_per_sock_per_path = {}
+doc_changes = {}
+EVENT_DAY_REMIND = 7
+USE_MYSQL = True
+user_cursors = {}
+change_history = {}
+user_selections = {}
+
+
+class LockType(Enum):
+    """Types of document locks"""
+
+    CHARACTER = 1  # Lock individual characters
+    WORD = 2  # Lock entire words
+    LINE = 3  # Lock entire lines
+
+
+LOCK_GRANULARITY = LockType.CHARACTER  # Can be changed to WORD or LINE
+ENABLE_OPERATIONAL_TRANSFORM = not not True  # Enable advanced conflict resolution
+MAX_HISTORY_LENGTH = 100
+
+
+@dataclass
+class UserState:
+    id: int
+    net: networkManager.NetworkManager
+    historic_id: Optional[int] = None  # ID of the historic summary being accessed
+
+
+state_per_sock: Dict[socket.socket, UserState] = {}
 
 
 def handle_key_exchange(
@@ -52,9 +84,6 @@ def handle_key_exchange(
     return net
 
 
-EVENT_DAY_REMIND = 7
-
-
 def handle_login(
     db_manager: DbManager, username, password, *, net: networkManager.NetworkManager
 ) -> bool:
@@ -66,6 +95,7 @@ def handle_login(
     loged = db_manager.authenticate_user(username, password)
     if loged:
         id_per_sock[net.sock] = loged.id
+        state_per_sock[net.sock] = UserState(loged.id, net, None)
     events = db_manager.get_events(loged.id) if loged else []
     # print("Eve: ", events)
     N_days_from_today = datetime.datetime.now() + datetime.timedelta(
@@ -189,29 +219,28 @@ def handle_delete_event(
 
 
 def handle_file(db_manager, path, *, net: networkManager.NetworkManager) -> bool:
-    id = db_manager.get_id_per_sock(net.sock)
+    user_id = db_manager.get_id_per_sock(net.sock)
     if not db_manager.get_is_sock_logged(net.sock):
         print("NOT logged in")
         net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
         return True
     # with open(f"./data/{id}/tmp/{path}", "rb") as jf
-    if not os.path.exists(f"./data/{id}/tmp"):
+    if not os.path.exists(f"./data/{user_id}/tmp"):
         print("Path does not exist")
-        os.makedirs(f"./data/{id}/tmp", exist_ok=False)
-    if id not in handlers_per_sock_per_path:
-        handlers_per_sock_per_path[id] = {}
-    if path in handlers_per_sock_per_path[id]:
+        os.makedirs(f"./data/{user_id}/tmp", exist_ok=False)
+    if user_id not in handlers_per_sock_per_path:
+        handlers_per_sock_per_path[user_id] = {}
+    if path in handlers_per_sock_per_path[user_id]:
         net.send_message(net.build_message("ERROR", ["FILE ALREADY EXISTS(rn)"]))
         return True
-    handlers_per_sock_per_path[id][path] = open(f"./data/{id}/tmp/{path}", "wb")
+    handlers_per_sock_per_path[user_id][path] = open(
+        f"./data/{user_id}/tmp/{path}", "wb"
+    )
     return False
 
 
-handlers_per_sock_per_path = {}
-
-
 def handle_chunk(db_manager, path, data, net: networkManager.NetworkManager) -> bool:
-    id = db_manager.get_id_per_sock(net.sock)
+    user_id = db_manager.get_id_per_sock(net.sock)
     if not db_manager.get_is_sock_logged(net.sock):
         print("NOT logged in")
         net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
@@ -219,31 +248,31 @@ def handle_chunk(db_manager, path, data, net: networkManager.NetworkManager) -> 
     # resuse handle later.... (matter of adding a global dict of id,
     # that leads to dict of path to file handle then seeing if it exists
     if (
-        id not in handlers_per_sock_per_path
-        or path not in handlers_per_sock_per_path[id]
+        user_id not in handlers_per_sock_per_path
+        or path not in handlers_per_sock_per_path[user_id]
     ):
         net.send_message(net.build_message("ERROR", ["NO FILE OPENED"]))
         return True
-    f = handlers_per_sock_per_path[id][path]
+    f = handlers_per_sock_per_path[user_id][path]
     f.write(base64.b64decode(data))
     return False
 
 
 def handle_end(db_manager, path, net: networkManager.NetworkManager) -> bool:
-    id = db_manager.get_id_per_sock(net.sock)
+    user_id = db_manager.get_id_per_sock(net.sock)
     if db_manager.get_is_sock_logged(net.sock) == -1:
         print("NOT logged in")
         net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
         return True
     if (
-        id not in handlers_per_sock_per_path
-        or path not in handlers_per_sock_per_path[id]
+        user_id not in handlers_per_sock_per_path
+        or path not in handlers_per_sock_per_path[user_id]
     ):
         net.send_message(net.build_message("ERROR", ["NO FILE OPENED"]))
         return True
-    f = handlers_per_sock_per_path[id][path]
+    f = handlers_per_sock_per_path[user_id][path]
     f.close()
-    del handlers_per_sock_per_path[id][path]
+    del handlers_per_sock_per_path[user_id][path]
     return False
 
 
@@ -316,7 +345,7 @@ def handle_export(db_manager, content, ext, net: networkManager.NetworkManager) 
 
 
 def handle_get_summary(db_manager, sid, net: networkManager.NetworkManager) -> bool:
-    id = db_manager.get_id_per_sock(net.sock)
+    user_id = db_manager.get_id_per_sock(net.sock)
     if not db_manager.get_is_sock_logged(net.sock):
         print("NOT logged in")
         net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
@@ -336,15 +365,15 @@ def handle_get_summary(db_manager, sid, net: networkManager.NetworkManager) -> b
     )
 
     # scan if id exists, then remove
-    for key, value in ids_per_summary_id.items():
-        if id in value:
-            value.remove(id)
+    for _, value in ids_per_summary_id.items():
+        if user_id in value:
+            value.remove(user_id)
             break
     if summ.id not in ids_per_summary_id:
-        ids_per_summary_id[summ.id] = [id]
-        spawn_summary_thread(summ, id, net, summ.id)
+        ids_per_summary_id[summ.id] = [user_id]
+        spawn_summary_thread(summ, user_id, net, summ.id)
     else:
-        ids_per_summary_id[summ.id].append(id)
+        ids_per_summary_id[summ.id].append(user_id)
 
     return False
 
@@ -386,14 +415,14 @@ def handle_get_summary_by_link(
 
 
 def handle_get_events(db_manager, *a, net: networkManager.NetworkManager) -> bool:
-    id = db_manager.get_id_per_sock(net.sock)
+    user_id = db_manager.get_id_per_sock(net.sock)
     if not db_manager.get_is_sock_logged(net.sock):
         print("NOT logged in")
         net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
         return True
 
-    events = db_manager.get_events(id)
-    print(f"Found {len(events)} events for user {id}")
+    events = db_manager.get_events(user_id)
+    print(f"Found {len(events)} events for user {user_id}")
 
     net.send_message(
         net.build_message(
@@ -426,15 +455,13 @@ def handle_get_events(db_manager, *a, net: networkManager.NetworkManager) -> boo
 #     return handle_inner
 #
 
-doc_changes = {}
-
 
 def handle_update_document(
     db_manager, changes, net: networkManager.NetworkManager
 ) -> bool:
     global doc_changes
     global documents
-    id = db_manager.get_id_per_sock(net.sock)
+    user_id = db_manager.get_id_per_sock(net.sock)
     if not db_manager.get_is_sock_logged(net.sock):
         print("NOT logged in")
         net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
@@ -443,7 +470,7 @@ def handle_update_document(
     # let the thread handle
     document_id = -1
     for k, v in ids_per_summary_id.items():
-        if id in v:
+        if user_id in v:
             document_id = k
             break
     if document_id == -1:
@@ -452,17 +479,17 @@ def handle_update_document(
         net.send_message(net.build_message("INFO", ["NO DOCUMENT OPENED"]))
         return False
     # print("Appending to Doc changes: ", doc_changes)
-    with doc_changes_lock:
+    with lock_per_doc[document_id]:  # doc_changes_lock:
         if document_id not in doc_changes:
             doc_changes[document_id] = {}
-        if id not in doc_changes[document_id]:
-            doc_changes[document_id][id] = []
+        if user_id not in doc_changes[document_id]:
+            doc_changes[document_id][user_id] = []
         # print(type(changes))
         # print("changes: ", changes)
         # print("changes[changes]: ", changes["changes"])
 
         if json.loads(changes)["changes"]:
-            doc_changes[document_id][id].append(changes)
+            doc_changes[document_id][user_id].append(changes)
             # print("Appended: ", changes)
             # print("\n\n\n")
         # else:
@@ -474,14 +501,14 @@ def handle_update_document(
 def handle_share_summary(
     db_manager: DbManager, username, net: networkManager.NetworkManager
 ) -> bool:
-    id = db_manager.get_id_per_sock(net.sock)
+    user_id = db_manager.get_id_per_sock(net.sock)
     if not db_manager.get_is_sock_logged(net.sock):
         print("NOT logged in")
         net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
         return True
     summary_id = -1
     for k, v in ids_per_summary_id.items():
-        if id in v:
+        if user_id in v:
             summary_id = k
             break
     if summary_id == -1:
@@ -491,7 +518,7 @@ def handle_share_summary(
     if user_id == -1:
         net.send_message(net.build_message("ERROR", ["USER NOT FOUND"]))
         return True
-    succsess = db_manager.share_summary(summary_id, id, user_id, "edit")
+    succsess = db_manager.share_summary(summary_id, user_id, user_id, "edit")
     if not succsess:
         net.send_message(net.build_message("ERROR", ["FAILED TO SHARE"]))
         return True
@@ -500,14 +527,14 @@ def handle_share_summary(
 
 
 def handle_get_graph(db_manager, *_, net: networkManager.NetworkManager) -> bool:
-    id = db_manager.get_id_per_sock(net.sock)
+    user_id = db_manager.get_id_per_sock(net.sock)
     if not db_manager.get_is_sock_logged(net.sock):
         print("NOT logged in")
         net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
         return True
     sid = -1
     for k, v in ids_per_summary_id.items():
-        if id in v:
+        if user_id in v:
             sid = k
             break
     if sid == -1:
@@ -524,7 +551,7 @@ def handle_get_graph(db_manager, *_, net: networkManager.NetworkManager) -> bool
 def handle_saving_events(
     db_manager, jsoned_events, net: networkManager.NetworkManager
 ) -> bool:
-    id = db_manager.get_id_per_sock(net.sock)
+    user_id = db_manager.get_id_per_sock(net.sock)
     if not db_manager.get_is_sock_logged(net.sock):
         print("NOT logged in")
         net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
@@ -534,13 +561,13 @@ def handle_saving_events(
     # print(events)
     print(events)
     for event in events:
-        db_manager.insert_event(id, event["event_title"], event["event_date"])
+        db_manager.insert_event(user_id, event["event_title"], event["event_date"])
     net.send_message(net.build_message("INFO", ["Event successfully added"]))
     return False
 
 
 def get_historic_list(db_manager, *_, net: networkManager.NetworkManager) -> bool:
-    uid = db_manager.get_id_per_sock(net.sock)
+    #_= db_manager.get_id_per_sock(net.sock)
     if not db_manager.get_is_sock_logged(net.sock):
         print("NOT logged in")
         net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
@@ -587,7 +614,7 @@ def load_historic_summary(
     with open(f"save/{sid}/{timestamp}/summary.md", "rb") as f:
         data = f.read()
     # remove the user from the queues
-    for key, value in ids_per_summary_id.items():
+    for _, value in ids_per_summary_id.items():
         if uid in value:
             value.remove(uid)
             break
@@ -631,6 +658,49 @@ def handle_historic_graph(
         data = f.read()
     dumped_data = base64.b64encode(data).decode()
     net.send_message(net.build_message("TAKEGRAPH", [dumped_data]))
+    return False
+
+
+def handle_import_gcal(db_manage, *_, net: networkManager.NetworkManager) -> bool:
+
+    creds = InstalledAppFlow.from_client_secrets_file(
+        "credentials.json", scopes=["https://www.googleapis.com/auth/calendar.readonly"]
+    ).run_local_server(port=0)
+
+    service = build("calendar", "v3", credentials=creds)
+    now = datetime.datetime.utcnow().isoformat() + "Z"
+
+    events_result = (
+        service.events()
+        .list(
+            calendarId="primary",
+            timeMin=now,
+            maxResults=10,
+            singleEvents=True,
+            orderBy="startTime",
+        )
+        .execute()
+    )
+
+    items = events_result.get("items", [])
+
+    events = []
+    for e in items:
+        dt_str = e["start"].get("dateTime", e["start"].get("date"))
+        dt = datetime.datetime.fromisoformat(dt_str)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone().replace(tzinfo=None)
+
+        events.append(
+            {
+                "event_title": e.get("summary", "No Title"),
+                "event_date": dt,
+                "createTime": datetime.datetime.now(),
+            }
+        )
+
+    encoded = base64.b64encode(pickle.dumps(events)).decode()
+    net.send_message(net.build_message("GCAL_EVENTS", [encoded]))
     return False
 
 
@@ -681,20 +751,39 @@ def thread_main(sock, addr, crypt):
     net.add_handler("GETHISTORICLIST", get_historic_list)
     net.add_handler("LOADHISTORIC", load_historic_summary)
     net.add_handler("HISTORICGRAPH", handle_historic_graph)
+    net.add_handler("IMPORT_GCAL", handle_import_gcal)
     net_per_sock[sock] = net
     sock.settimeout(0.5)
-    while True:
-        # with lock_per_sock[sock]:
-        try:
-            exited = net.recv_handle_server(db_manager)  # net.wait_recv()
-            if exited:
-                print("Exiting thread")
-                return
+    try:
+        while True:
+            # with lock_per_sock[sock]:
+            try:
+                exited = net.recv_handle_server(db_manager)  # net.wait_recv()
+                if exited:
+                    print("Exiting thread")
 
-            time.sleep(1)
-        except socket.timeout:
-            print("Timeout lock outght to free")
-            pass
+                    for _, value in ids_per_summary_id.items():
+
+                        if id_per_sock[sock] in value:
+                            value.remove(id_per_sock[sock])
+                            break
+                    if sock in id_per_sock:
+                        del id_per_sock[sock]
+                    # delete from ids_per_summary_id
+                    return
+                # time.sleep(1)
+            except socket.timeout:
+                print("Timeout lock outght to free")
+                
+    finally:
+        if sock in id_per_sock:
+            del id_per_sock[sock]
+        # delete from ids_per_summary_id
+        # with doc_changes_lock:
+        for _, value in ids_per_summary_id.items():
+            if id_per_sock[sock] in value:
+                value.remove(id_per_sock[sock])
+                break
 
 
 def update_insert_coordinates(change_data, start, offset):
@@ -770,26 +859,26 @@ def update_coordinates(sid, change_id, change_type, start, end, offset):
                 update_update_coordinates(other_change, end, offset)
 
 
-def apply_change(doc_content, change):
-    """Apply a single change to the document content"""
-    start, end = change["cord"]
-    change_type = change["type"]
-    content = change.get("cont", "")
-
-    if change_type == "INSERT":
-        # Insert content at the specified position
-        new_content = doc_content[:start] + content + doc_content[start:]
-        offset = len(content)
-    elif change_type == "DELETE":
-        # Remove content between start and end
-        new_content = doc_content[:start] + doc_content[end:]
-        offset = start - end
-    else:  # UPDATE
-        # Replace content between start and end
-        new_content = doc_content[:start] + content + doc_content[end:]
-        offset = len(content) - (end - start)
-
-    return new_content, offset, change_type, start, end
+# def apply_change(doc_content, change):
+#     """Apply a single change to the document content"""
+#     start, end = change["cord"]
+#     change_type = change["type"]
+#     content = change.get("cont", "")
+#
+#     if change_type == "INSERT":
+#         # Insert content at the specified position
+#         new_content = doc_content[:start] + content + doc_content[start:]
+#         offset = len(content)
+#     elif change_type == "DELETE":
+#         # Remove content between start and end
+#         new_content = doc_content[:start] + doc_content[end:]
+#         offset = start - end
+#     else:  # UPDATE
+#         # Replace content between start and end
+#         new_content = doc_content[:start] + content + doc_content[end:]
+#         offset = len(content) - (end - start)
+#
+#     return new_content, offset, change_type, start, end
 
 
 def process_changes(sid, doc_content):
@@ -824,31 +913,315 @@ def process_changes(sid, doc_content):
     return doc_content, changes_processed
 
 
-def send_updates_to_users(sid, doc_content):
-    """Send updated content to all connected users"""
-    connected_users = ids_per_summary_id[sid]
-    print(f"Sending updates to {len(connected_users)} connected users")
+# def send_updates_to_users(sid, doc_content):
+#     """Send updated content to all connected users"""
+#     connected_users = ids_per_summary_id[sid]
+#     print(f"Sending updates to {len(connected_users)} connected users")
+#
+#     for user_id in connected_users:
+#         try:
+#             # Get the socket associated with this user
+#             sock_per_id = {v: k for k, v in id_per_sock.items()}
+#             user_socket = sock_per_id[user_id]
+#
+#             # Send the updated content
+#             net = net_per_sock[user_socket]
+#             update_message = net.build_message(
+#                 "TAKEUPDATE",
+#                 [
+#                     base64.b64encode(
+#                         json.dumps({"doc_content": doc_content}).encode()
+#                     ).decode()
+#                 ],
+#             )
+#             net.send_message(update_message)
+#             print(f"Update sent to user {user_id}")
+#         except Exception as e:
+#             print(f"Error sending update to user {user_id}: {e}")
 
-    for user_id in connected_users:
+
+def get_lock_boundaries(content, position, lock_type=LockType.CHARACTER):
+    """
+    Determine the boundaries of the lock based on the lock type.
+    Returns a tuple (start, end) for the lock region.
+    """
+    if not content:
+        return (0, 1)
+
+    position = max(0, min(len(content) - 1, position))
+
+    if lock_type == LockType.CHARACTER:
+        return (position, position + 1)
+
+    if lock_type == LockType.WORD:
+        start = position
+        while start > 0 and content[start - 1].isalnum():
+            start -= 1
+        end = position
+        while end < len(content) and content[end].isalnum():
+            end += 1
+        return (start, end)
+
+    if lock_type == LockType.LINE:
+        start = content.rfind("\n", 0, position) + 1
+        end = content.find("\n", position)
+        end = end if end != -1 else len(content)
+        return (start, end)
+
+    return (position, position + 1)
+
+
+def transform_position(pos, change_type, change_start, change_end, content_length):
+    """
+    Operational transformation for positions based on a change
+    Adjusts a position after a change has been applied
+    """
+    if change_type == "INSERT":
+        if pos >= change_start:
+            return pos + content_length
+    if change_type == "DELETE":
+        if pos > change_end:
+            return pos - (change_end - change_start)
+        if pos > change_start:
+            return change_start
+    if change_type == "UPDATE":
+        if pos > change_end:
+            return pos + (content_length - (change_end - change_start))
+        if pos > change_start:
+            # If position was inside the update region, place it proportionally in the new content
+            relative_pos = (pos - change_start) / (change_end - change_start)
+            return change_start + int(content_length * relative_pos)
+
+    return pos
+
+
+def transform_change(change, prior_change):
+    """
+    Apply operational transformation to adjust a change based on a prior change
+    """
+    start, end = change["cord"]
+    prior_start, prior_end = prior_change["cord"]
+    prior_type = prior_change["type"]
+    prior_content_len = len(prior_change.get("cont", ""))
+
+    # Transform start and end positions
+    new_start = transform_position(
+        start, prior_type, prior_start, prior_end, prior_content_len
+    )
+    new_end = transform_position(
+        end, prior_type, prior_start, prior_end, prior_content_len
+    )
+
+    # Update the change coordinates
+    change["cord"] = [new_start, new_end]
+    return change
+
+
+def process_changes2(sid, doc_content):
+    """Process all pending changes for a summary using operational transformation"""
+    changes_processed = False
+    all_changes = []
+
+    # Gather all changes across all change_ids into a single queue
+    for change_id, changes in list(doc_changes[sid].items()):
+        for change_data in changes:
+            change_obj = json.loads(change_data)
+
+            # Extract client info
+            client_id = change_obj.get("client_id", "unknown")
+            user_id = change_obj.get("user_id", "unknown")
+
+            # Process cursor/selection updates
+            if "cursor" in change_obj:
+                user_cursors[sid][client_id] = change_obj["cursor"]
+
+            if "selection" in change_obj:
+                user_selections[sid][client_id] = change_obj["selection"]
+
+            # Process text changes
+            for change in change_obj.get("changes", []):
+                if not change:
+                    continue
+
+                # Add metadata to the change
+                change["change_id"] = change_id
+                change["client_id"] = client_id
+                change["user_id"] = user_id
+                change["timestamp"] = time.time()
+
+                all_changes.append(change)
+
+    # Clear the pending changes since we've copied them
+    doc_changes[sid].clear()
+
+    if not all_changes:
+        return doc_content, False
+
+    # Sort changes by timestamp if available
+    all_changes.sort(key=lambda x: x.get("timestamp", 0))
+
+    # Process all changes in order with conflict resolution
+    for change in all_changes:
+        start, end = change["cord"]
+        change_type = change["type"]
+        content = change.get("cont", "")
+        change_id = change["change_id"]
+        client_id = change["client_id"]
+        user_id = change["user_id"]
+
         try:
-            # Get the socket associated with this user
-            sock_per_id = {v: k for k, v in id_per_sock.items()}
-            user_socket = sock_per_id[user_id]
+            # Apply operational transformation if enabled
+            if ENABLE_OPERATIONAL_TRANSFORM and change_history.get(sid, []):
+                # Apply transformations based on recent history
+                for prior_change in change_history[sid]:
+                    change = transform_change(change, prior_change)
 
-            # Send the updated content
-            net = net_per_sock[user_socket]
-            update_message = net.build_message(
-                "TAKEUPDATE",
-                [
-                    base64.b64encode(
-                        json.dumps({"doc_content": doc_content}).encode()
-                    ).decode()
-                ],
+                # Get updated coordinates after transformation
+                start, end = change["cord"]
+
+            # Apply the change
+            if change_type == "INSERT":
+                doc_content = doc_content[:start] + content + doc_content[start:]
+            elif change_type == "DELETE":
+                doc_content = doc_content[:start] + doc_content[end:]
+            elif change_type == "UPDATE":
+                doc_content = doc_content[:start] + content + doc_content[end:]
+            import copy
+
+            # Record in history
+            change_copy = copy.deepcopy(change)
+            change_history[sid].append(change_copy)
+
+            # Limit history size
+            if len(change_history[sid]) > MAX_HISTORY_LENGTH:
+                change_history[sid] = change_history[sid][-MAX_HISTORY_LENGTH:]
+
+            # Update all user cursors and selections based on this change
+            update_cursors_and_selections(
+                sid, client_id, change_type, start, end, len(content)
             )
-            net.send_message(update_message)
-            print(f"Update sent to user {user_id}")
+
+            changes_processed = True
+            print(
+                f"Applied change type {change_type} at position {start}-{end} for change ID {change_id} from user {user_id}"
+            )
+
         except Exception as e:
-            print(f"Error sending update to user {user_id}: {e}")
+            print(f"Error applying change: {e}")
+
+    return doc_content, changes_processed
+
+
+def update_cursors_and_selections(
+    sid, originating_client_id, change_type, start, end, content_length
+):
+    """
+    Update all users' cursors and selections based on a change that was just applied
+    This keeps everyone's cursor in a sensible position after text changes
+    """
+    # Skip the originating client as they'll update their own cursor
+    for client_id in user_cursors.get(sid, {}):
+        if client_id == originating_client_id:
+            continue
+
+        # Update cursor position
+        if client_id in user_cursors[sid]:
+            cursor_pos = user_cursors[sid][client_id]
+            user_cursors[sid][client_id] = transform_position(
+                cursor_pos, change_type, start, end, content_length
+            )
+
+    # Update selections
+    for client_id in user_selections.get(sid, {}):
+        if client_id == originating_client_id:
+            continue
+
+        if client_id in user_selections[sid]:
+            sel_start, sel_end = user_selections[sid][client_id]
+
+            # Transform both edges of the selection
+            new_sel_start = transform_position(
+                sel_start, change_type, start, end, content_length
+            )
+            new_sel_end = transform_position(
+                sel_end, change_type, start, end, content_length
+            )
+
+            user_selections[sid][client_id] = [new_sel_start, new_sel_end]
+
+
+def apply_change(doc_content, change):
+    """Apply a single change to the document content"""
+    start, end = change["cord"]
+    change_type = change["type"]
+    content = change.get("cont", "")
+
+    if change_type == "INSERT":
+        # Insert content at the specified position
+        new_content = doc_content[:start] + content + doc_content[start:]
+        offset = len(content)
+    elif change_type == "DELETE":
+        # Remove content between start and end
+        new_content = doc_content[:start] + doc_content[end:]
+        offset = start - end
+    else:  # UPDATE
+        # Replace content between start and end
+        new_content = doc_content[:start] + content + doc_content[end:]
+        offset = len(content) - (end - start)
+
+    return new_content, offset, change_type, start, end
+
+
+def send_updates_to_users(sid, doc_content):
+    """Send document updates to all connected users including cursor positions"""
+    # Implementation depends on the websocket/communication framework
+    print("Sockets: ", ids_per_summary_id[sid])
+    for client_id in ids_per_summary_id.get(sid, set()):
+        try:
+            # Create a snapshot of all other users' cursors and selections
+            other_cursors = {
+                cid: pos
+                for cid, pos in user_cursors.get(sid, {}).items()
+                if cid != client_id
+            }
+            other_selections = {
+                cid: sel
+                for cid, sel in user_selections.get(sid, {}).items()
+                if cid != client_id
+            }
+
+            # Get recent changes for this document
+            recent_changes = change_history.get(sid, [])[-5:]  # Last 5 changes
+
+            # Assume we have a send_message function that sends to specific clients
+            sock = {v: k for k, v in id_per_sock.items()}.get(client_id, None)
+            net = net_per_sock.get(sock)
+            if net is None:
+                print(f"No network manager found for client {client_id}")
+                continue
+                # base64.b64encode(
+                #     json.dumps({"doc_content": doc_content}).encode()
+                # ).decode()
+            js = json.dumps(
+                {
+                    "type": "document_update",
+                    "summary_id": sid,
+                    "doc_content": doc_content,
+                    "cursors": other_cursors,
+                    "selections": other_selections,
+                    "recent_changes": recent_changes,
+                }
+            )
+            print("Sending: ", js)
+            net.send_message(
+                net.build_message(
+                    "TAKEUPDATE",
+                    [base64.b64encode(js.encode()).decode()],
+                )
+            )
+            # print("Final state: \n", doc_content)
+        except Exception as e:
+            print(f"Error sending update to client {client_id}: {e}")
 
 
 def summary_thread(sid, db_manager):
@@ -861,30 +1234,37 @@ def summary_thread(sid, db_manager):
         print(f"Starting summary thread for: {sid}")
 
         # Initialize document content from database
-        with doc_changes_lock:
+        with lock_per_doc[sid]:  # doc_changes_lock:
             doc = db_manager.get_summary(sid)
             doc_content = doc.content if doc and doc.content else ""
-
+            if sid not in user_cursors:
+                user_cursors[sid] = {}
+            if sid not in user_selections:
+                user_selections[sid] = {}
+            if sid not in change_history:
+                change_history[sid] = []
         print("Entering the processing loop")
 
         # Continue as long as clients are connected to this summary
         while ids_per_summary_id[sid]:
             changes_found = False
-            with doc_changes_lock:
+            with lock_per_doc[sid]:
                 if sid in doc_changes and doc_changes[sid]:
                     changes_found = True
             if not changes_found:
                 time.sleep(0.5)
                 continue
-            with doc_changes_lock:
+            with lock_per_doc[sid]:
                 if sid not in doc_changes or not doc_changes[sid]:
                     continue
-                doc_content, changes_processed = process_changes(sid, doc_content)
+                doc_content, changes_processed = process_changes2(sid, doc_content)
                 if changes_processed:
                     print("Changes processed successfully")
             if changes_processed:
                 send_updates_to_users(sid, doc_content)
                 print("All users updated successfully")
+            else:
+                print("NO updated")
         return
 
     except Exception as e:
@@ -906,7 +1286,7 @@ def summary_thread(sid, db_manager):
             print(f"Failed to save final state: {e}")
 
 
-def spawn_summary_thread(summ, id, net, sid):
+def spawn_summary_thread(summ, uid, net, sid):
     global threads
     db_manager = DbManager()
     db_manager.connect_to_db(
@@ -918,6 +1298,7 @@ def spawn_summary_thread(summ, id, net, sid):
             "port": os.getenv("DB_PORT"),
         }
     )
+    lock_per_doc[sid] = threading.Lock()
     thread = Thread(target=summary_thread, args=(sid, db_manager))
     thread.start()
     # thread.join()
@@ -934,7 +1315,7 @@ def main(sock, crypt, t1):
         print("Listening....")
         client_sock, addr = sock.accept()
         print(f"Connection from {addr}")
-        lock_per_sock[client_sock] = threading.Lock()
+        # lock_per_sock[client_sock] = threading.Lock()
         crypt = cryptManager.CryptManager(rsa_key)
         thread = Thread(target=thread_main, args=(client_sock, addr, crypt))
         thread.start()
@@ -943,7 +1324,6 @@ def main(sock, crypt, t1):
         th.join()
 
 
-USE_MYSQL = False
 if __name__ == "__main__":
     print("Done importing")
     t1 = time.time()
@@ -963,10 +1343,10 @@ if __name__ == "__main__":
         ]
     ):
         print("make sure all env variables are defined.")
-        exit()
+        sys.exit()
     elif not USE_MYSQL and not os.path.isfile("dbconved.db"):
         print("Create the db")
-        exit()
+        sys.exit()
 
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 12345
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

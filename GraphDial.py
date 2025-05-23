@@ -1,6 +1,7 @@
-import wx
-import math
 import collections
+import math
+
+import wx
 
 
 class GraphDialog(wx.Dialog):

@@ -1,31 +1,24 @@
-from typing import Any
-from dotenv import load_dotenv
-import os
-from typing import Optional
+import base64
+import datetime
 import logging
-import unittest
-
-# import logging
-from typing import List, Dict
+import os
+import pickle
+import re
 import shutil
-
-# from datetime import datetime
-from mysql.connector import Error
+import unittest
+# import hashlib
+import uuid
+from dataclasses import dataclass, field
+# import logging
+from typing import Any, Dict, List, Optional, Tuple
 
 # from unittest.mock import patch, MagicMock
 # import pytest
 import mysql.connector
-from mysql.connector import MySQLConnection
-import datetime
-from dataclasses import dataclass, field
-from typing import Tuple
-
-# import hashlib
-import uuid
-import base64
+from dotenv import load_dotenv
+# from datetime import datetime
+from mysql.connector import Error, MySQLConnection
 from mysql.connector.pooling import PooledMySQLConnection
-import re
-import pickle
 
 
 @dataclass
@@ -66,6 +59,8 @@ class Node:
         return hash((self.id, self.name, self.type))
 
 
+import re
+import sqlite3
 # @dataclass
 # class Event:
 #     id: int
@@ -75,45 +70,45 @@ class Node:
 #     createTime: Optional[datetime] = None
 #     updateTime: Optional[datetime] = None
 from typing import Any, Dict, List, Optional, Tuple, Union
+
 import mysql.connector
-from mysql.connector.pooling import PooledMySQLConnection
 from mysql.connector import MySQLConnection
-import sqlite3
-import re
+from mysql.connector.pooling import PooledMySQLConnection
 
 
 class DBConnection:
     """Abstract database connection class to support both MySQL and SQLite."""
-    
+
     class ConnectionProxy:
         """Proxy class for the connection object to add methods."""
+
         def __init__(self, parent):
             self._parent = parent
             self._connection = None
-            
+
         def __getattr__(self, name):
             """Forward attribute access to the actual connection."""
             if self._connection is None:
                 raise AttributeError("Connection not established")
             return getattr(self._connection, name)
-            
+
         def commit(self):
             """Commit the current transaction."""
             if self._connection is None:
                 return False
-                
+
             try:
                 self._connection.commit()
                 return True
             except Exception as e:
                 print(f"Error committing transaction: {e}")
                 return False
-                
+
         def close(self):
             """Close the connection."""
             if self._connection is None:
                 return
-                
+
             try:
                 self._connection.close()
                 self._connection = None
@@ -121,117 +116,127 @@ class DBConnection:
                     self._parent.cursor._cursor = None
             except Exception as e:
                 print(f"Error closing connection: {e}")
-                
+
     class CursorProxy:
         """Proxy class for the cursor object to add methods."""
+
         def __init__(self, parent):
             self._parent = parent
             self._cursor = None
-            
+
         def __getattr__(self, name):
             """Forward attribute access to the actual cursor."""
             if self._cursor is None:
                 raise AttributeError("Cursor not established")
             return getattr(self._cursor, name)
-            
+
         def execute(self, query, params=None):
             """Execute a query with parameters."""
             if self._cursor is None:
                 return False
-                
+
             try:
                 # Transform query if needed
                 print("Executing on type: ", self._parent.db_type)
                 print(query)
                 print("Params: ", params)
-                if self._parent.db_type == 'sqlite' and params:
+                if self._parent.db_type == "sqlite" and params:
                     print("ITS SQLITE")
-                    query, params = self._parent._transform_query_for_sqlite(query, params)
-                
+                    query, params = self._parent._transform_query_for_sqlite(
+                        query, params
+                    )
+
                 # Execute the query
                 if params:
                     self._cursor.execute(query, params)
                 else:
                     self._cursor.execute(query)
-                    
+
                 return True
             except Exception as e:
                 print(f"Error executing query: {e}")
                 print(f"Query: {query}")
                 print(f"Params: {params}")
                 return False
-                
+
         def fetchone(self):
             """Fetch one result."""
             if self._cursor is None:
                 return None
-                
+
             try:
                 result = self._cursor.fetchone()
                 return result
             except Exception as e:
                 print(f"Error fetching one result: {e}")
                 return None
-                
+
         def fetchall(self):
             """Fetch all results."""
             if self._cursor is None:
                 return []
-                
+
             try:
                 results = self._cursor.fetchall()
                 return results
             except Exception as e:
                 print(f"Error fetching all results: {e}")
                 return []
-                
+
         def close(self):
             """Close the cursor."""
             if self._cursor is None:
                 return
-                
+
             try:
                 self._cursor.close()
                 self._cursor = None
             except Exception as e:
                 print(f"Error closing cursor: {e}")
-                
+
         @property
         def rowcount(self):
             """Get the number of affected rows."""
             if self._cursor is None:
                 return 0
             return self._cursor.rowcount
-    
+
     def __init__(self):
         self.connection_proxy = self.ConnectionProxy(self)
         self.cursor_proxy = self.CursorProxy(self)
         self.db_type = None
-    
+
     @property
     def connection(self):
         return self.connection_proxy
-        
+
     @property
     def cursor(self):
         return self.cursor_proxy
-    
+
     def connect(self, db_config: Dict[str, Any]) -> bool:
         """Connect to database based on the config provided."""
-        if 'db_type' not in db_config:
+        if "db_type" not in db_config:
             # raise ValueError("db_type must be specified in db_config")
-            db_config['db_type'] = 'mysql'
-        self.db_type = db_config['db_type']
-        
+            db_config["db_type"] = "mysql"
+        self.db_type = db_config["db_type"]
+
         try:
-            if self.db_type == 'mysql':
+            if self.db_type == "mysql":
                 # Remove the db_type key from the config
-                mysql_config = {k: v for k, v in db_config.items() if k != 'db_type'}
-                self.connection_proxy._connection = mysql.connector.connect(**mysql_config)
-                self.cursor_proxy._cursor = self.connection_proxy._connection.cursor(dictionary=True, buffered=True)
+                mysql_config = {k: v for k, v in db_config.items() if k != "db_type"}
+                self.connection_proxy._connection = mysql.connector.connect(
+                    **mysql_config
+                )
+                self.cursor_proxy._cursor = self.connection_proxy._connection.cursor(
+                    dictionary=True, buffered=True
+                )
                 return True
-            elif self.db_type == 'sqlite':
-                self.connection_proxy._connection = sqlite3.connect(db_config['database'],detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES) 
+            elif self.db_type == "sqlite":
+                self.connection_proxy._connection = sqlite3.connect(
+                    db_config["database"],
+                    detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
+                )
                 # Enable row factory to mimic dictionary cursor behavior
                 self.connection_proxy._connection.row_factory = self._dict_factory
                 self.cursor_proxy._cursor = self.connection_proxy._connection.cursor()
@@ -241,27 +246,29 @@ class DBConnection:
         except Exception as e:
             print(f"Error connecting to {self.db_type} database: {e}")
             return False
-    
+
     def _dict_factory(self, cursor, row):
         """Convert SQLite row to dictionary to mimic MySQL's dictionary cursor."""
         d = {}
         for idx, col in enumerate(cursor.description):
             d[col[0]] = row[idx]
         return d
-    
+
     def _transform_query_for_sqlite(self, query: str, params: tuple) -> tuple:
         """Transform MySQL query format (%s) to SQLite format (?)."""
         # Replace %s with ? for SQLite
         # Count %s occurrences to verify param count
-        placeholders_count = query.count('%s')
-        
+        placeholders_count = query.count("%s")
+
         if placeholders_count != len(params):
-            raise ValueError(f"Parameter count mismatch: {placeholders_count} placeholders for {len(params)} parameters")
-        
-        transformed_query = query.replace('%s', '?')
+            raise ValueError(
+                f"Parameter count mismatch: {placeholders_count} placeholders for {len(params)} parameters"
+            )
+
+        transformed_query = query.replace("%s", "?")
         print("Transformed query: ", transformed_query)
         return transformed_query, params
-    
+
     def close(self) -> None:
         """Close cursor and connection."""
         try:
@@ -276,17 +283,18 @@ class DBConnection:
         """Get the last inserted ID."""
         if not self.connection_proxy._connection:
             return -1
-            
+
         try:
-            if self.db_type == 'mysql':
+            if self.db_type == "mysql":
                 self.cursor_proxy.execute("SELECT LAST_INSERT_ID()")
                 result = self.cursor_proxy.fetchone()
                 return result["LAST_INSERT_ID()"] if result else -1
-            elif self.db_type == 'sqlite':
+            elif self.db_type == "sqlite":
                 return self.cursor_proxy._cursor.lastrowid
         except Exception as e:
             print(f"Error getting last insert ID: {e}")
             return -1
+
 
 class DbManager:
     def __init__(self):
@@ -311,16 +319,14 @@ class DbManager:
         #     print(f"Error connecting to database: {e}")
         db = DBConnection()
         db.connect(db_config)
-        self.connection = db.connection 
-        self.cursor = db.cursor
-    def connect_to_sqlite(self, db_config: Dict[str,Any]) -> None:
-        db = DBConnection()
-        db.connect({
-            'db_type':  'sqlite',
-            'database': db_config['database']
-        })
         self.connection = db.connection
-        self.cursor     = db.cursor
+        self.cursor = db.cursor
+
+    def connect_to_sqlite(self, db_config: Dict[str, Any]) -> None:
+        db = DBConnection()
+        db.connect({"db_type": "sqlite", "database": db_config["database"]})
+        self.connection = db.connection
+        self.cursor = db.cursor
 
     def get_id_by_username(self, username: str) -> int:
         query = "SELECT id FROM User WHERE username = %s"
@@ -335,7 +341,7 @@ class DbManager:
                 INSERT INTO user (username, hashedPass, salt, isPublic)
                 VALUES (%s, %s, %s, %s)
             """
-            print("Running query: ",query)
+            print("Running query: ", query)
             self.cursor.execute(
                 query, (username, password_hash, base64.b64encode(salt).decode(), 0)
             )

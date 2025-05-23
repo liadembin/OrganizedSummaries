@@ -1,12 +1,13 @@
+import base64  # Needed for encoding/decoding event data for network
 import datetime
-import wx
-import wx.adv  # Needed for DatePickerCtrl and TimePickerCtrl
 import os
 import pickle
-import base64  # Needed for encoding/decoding event data for network
 import threading  # Needed for GCal import
-from google_auth_oauthlib.flow import InstalledAppFlow
+
+import wx
+import wx.adv  # Needed for DatePickerCtrl and TimePickerCtrl
 from google.auth.transport.requests import Request
+from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
 # Assume net object has methods:
@@ -1187,19 +1188,19 @@ class EventsDialog(wx.Dialog):
     def on_import_gcal(self, event):
         """Handle Google Calendar import button click"""
         self.log_event("Import from Google Calendar button clicked.")
-        
+
         # Create a progress dialog that doesn't block the UI
         progress_dialog = wx.ProgressDialog(
             "Google Calendar Import",
             "Connecting to Google Calendar and fetching events...",
             maximum=100,
             parent=self,
-            style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE
+            style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE,
         )
-        
+
         # Update to show it's working (indeterminate progress)
         progress_dialog.Pulse()
-        
+
         # Define the thread function
         def import_thread():
             try:
@@ -1208,22 +1209,24 @@ class EventsDialog(wx.Dialog):
                 wx.CallAfter(progress_dialog.Destroy)  # Properly close the dialog
                 wx.CallAfter(self.show_imported_events, new_events)
             except Exception as e:
-                wx.CallAfter(progress_dialog.Destroy)  # Ensure dialog is closed on error
+                wx.CallAfter(
+                    progress_dialog.Destroy
+                )  # Ensure dialog is closed on error
                 self.log_event(f"Error in import thread: {e}")
                 # Show error message in the main thread
                 wx.CallAfter(
                     self.show_error, f"Error importing Google events: {str(e)}"
                 )
-        
+
         # Start the thread
         thread = threading.Thread(target=import_thread)
         thread.daemon = True  # Allow program to exit even if thread is running
         thread.start()
         self.log_event("Google import thread started.")
-        
+
         # Allow UI updates while waiting
         wx.Yield()
-    
+
     def show_imported_events(self, imported_events):
         """Display imported events and ask for confirmation"""
         try:
@@ -1259,7 +1262,9 @@ class EventsDialog(wx.Dialog):
 
             for i, event in enumerate(imported_events):
                 index = event_list.InsertItem(i, event["event_title"])
-                event_list.SetItem(index, 1, event["event_date"].strftime("%Y-%m-%d %H:%M"))
+                event_list.SetItem(
+                    index, 1, event["event_date"].strftime("%Y-%m-%d %H:%M")
+                )
 
             vbox.Add(event_list, proportion=1, flag=wx.EXPAND | wx.ALL, border=10)
 
@@ -1277,7 +1282,9 @@ class EventsDialog(wx.Dialog):
             dialog.Centre()
 
             if dialog.ShowModal() == wx.ID_OK:
-                self.log_event(f"User confirmed import of {len(imported_events)} events.")
+                self.log_event(
+                    f"User confirmed import of {len(imported_events)} events."
+                )
                 # Add events to our list - they already have id = -1
                 self.events.extend(imported_events)
                 self.organize_events_by_date()
@@ -1294,7 +1301,9 @@ class EventsDialog(wx.Dialog):
             dialog.Destroy()
         except Exception as e:
             import traceback
+
             traceback.print_exc()
+
     def show_error(self, message):
         """Show error message dialog."""
         self.log_event(f"Displaying error: {message}")
@@ -1380,7 +1389,7 @@ if __name__ == "__main__":
                 if "DELETE_SUCCESS" in self.handlers:
                     # Need to run handler slightly later to avoid UI recursion issues
                     wx.CallLater(
-                        100, self.handlers["DELETE_SUCCESS"], event_id,net=self
+                        100, self.handlers["DELETE_SUCCESS"], event_id, net=self
                     )  # Pass back the ID
 
             elif command == "ADDEVENT":
@@ -1400,7 +1409,9 @@ if __name__ == "__main__":
                 pickled_event = pickle.dumps(new_event)
                 encoded_event = base64.b64encode(pickled_event).decode()
                 if "ADD_SUCCESS" in self.handlers:
-                    wx.CallLater(100, self.handlers["ADD_SUCCESS"], encoded_event,net=self)
+                    wx.CallLater(
+                        100, self.handlers["ADD_SUCCESS"], encoded_event, net=self
+                    )
 
             elif command == "SAVE_EVENTS":
                 print(

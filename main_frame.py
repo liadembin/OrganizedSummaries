@@ -1,147 +1,172 @@
-import datetime
-import wx
-from networkManager import NetworkManager
+# Standard library imports first
 import base64
-import pickle
-import os
-import wx.html2
-import wx.adv
-import pdfkit
-import time
-import json
+import datetime
 import difflib
+import json
+import os
+import pickle
 import threading
+import time
+import traceback
 import unicodedata
-from GraphDial import GraphDialog
+
+# Third-party imports
+import pdfkit
+import wx
+import wx.adv
+import wx.html2
+
+# First-party/local imports
 from EventDiag import EventsDialog
 from FontDiag import FontSelectorDialog
-from SummaryCarousell import SummaryCarousel
-import traceback
+from GraphDial import GraphDialog
 from HistoricList import HistoricListFrame
+from networkManager import NetworkManager
+from SummaryCarousell import SummaryCarousel
 
 
 class MainFrame(wx.Frame):
+    """Main application window for the document editor with HTML preview."""
+
     def __init__(self, net: NetworkManager, username):
+        """Initialize the main frame.
+
+        Args:
+            net: NetworkManager instance for network communication
+            username: Current user's username
+        """
         super().__init__(None, title="App Dashboard", size=(800, 600))
+        self.username = username
+        # Initialize threading components
         self.sock_lock = threading.Lock()
-        self.listening_thread = threading.Thread(
-            target=self.listen_for_changes, args=(self,), daemon=True
-        )
         self.update_lock = threading.Lock()
-        self.is_proccesing = threading.Event()
-        # self.made_changes = []
-        # Set up a timer to check for document changes
+        self.is_processing = threading.Event()
+
+        # Initialize timers
         self.update_timer = wx.Timer(self)
         self.update_enable_timer = wx.Timer(self)
         self.Bind(wx.EVT_TIMER, self.update_doc, self.update_timer)
-        self.Bind(wx.EVT_TIMER, self.enable_listen, self.update_enable_timer)
+        # self.Bind(wx.EVT_TIMER, self.enable_listen, self.update_enable_timer)
+
+        # Network and user setup
         net.set_lock(self.sock_lock)
         self.net = net
         self.username = username
-        self.listening_thread.start()
-        self.html_content = ""  # To store HTML content
+
+        # Initialize state variables
+        self.html_content = ""
         self.awaiting_update = False
-        self.cnt = 0 
-        # Main panel
+        self.prev_content = ""
+        self.last_char = " "
+        self.last_update_time = 0
+        self.UPDATE_THROTTLE_INTERVAL = 0.0
+        self.cnt = 0
+        self.historic = False
+        self.picked_time = None
+
+        # Initialize UI components
+        self.carousel = None
+        self.events_dialog = None
+
+        # Set default font info
+        self.current_font = {
+            "name": "Arial",  # Changed from "Blackadder ITC" to more common font
+            "url": None,
+            "from_url": False,
+        }
+        self.username_label = None
+        self.editor_panel = None
+        self.editor: wx.TextCtrl | None = None
+        self.html_panel = None
+        self.html_window = None
+
+        # Handler and dialog attributes
+        self.handlers = {}
+        self.dialog = None
+
+        # Event-related attributes
+        self.event_title = ""
+        self.event_date = None
+        self.event_time = None
+        self.formatted_date = ""
+        self.formatted_time = ""
+        self.datetime_str = ""
+        # Create UI
+        self._create_ui()
+
+        # Start listening thread
+        self.listening_thread = threading.Thread(
+            target=self.listen_for_changes, args=(self,), daemon=True
+        )
+        self.listening_thread.start()
+
+        # Initialize HTML view
+        self.update_html_view()
+
+    def _create_ui(self):
+        """Create the user interface components"""
         panel = wx.Panel(self)
-        self.last_char = ' '
-        # Layout
         vbox = wx.BoxSizer(wx.VERTICAL)
 
-        # Top controls (username, share button, see linked button, browse data button)
+        # Create top controls
+        hbox_top = self._create_top_controls(panel)
+        vbox.Add(hbox_top, flag=wx.EXPAND | wx.ALL, border=10)
+
+        # Create main content area
+        self.splitter = self._create_main_content(panel)
+        vbox.Add(self.splitter, proportion=1, flag=wx.EXPAND | wx.ALL, border=10)
+
+        # Create bottom controls
+        hbox_bottom = self._create_bottom_controls(panel)
+        vbox.Add(hbox_bottom, flag=wx.ALIGN_CENTER_HORIZONTAL | wx.ALL, border=10)
+
+        panel.SetSizer(vbox)
+
+    def _create_top_controls(self, panel):
+        """Create the top control buttons"""
         hbox_top = wx.BoxSizer(wx.HORIZONTAL)
-        self.username_label = wx.StaticText(panel, label=f"Username: {username}")
-        share_button = wx.Button(panel, label="Share")
-        see_linked_button = wx.Button(panel, label="See Linked")
-        browse_data_button = wx.Button(panel, label="Browse Summaries")
-        font_button = wx.Button(panel, label="Font Options")
-        font_button.Bind(wx.EVT_BUTTON, self.on_font_selector)
-        save_button = wx.Button(panel, label="Save")
-        save_button.Bind(wx.EVT_BUTTON, self.on_save)
-        graph_button = wx.Button(panel, label="See graph")
-        history_button = wx.Button(panel, label="See History")
-        history_button.Bind(wx.EVT_BUTTON, self.on_historic)
+
+        # Username label
+        self.username_label = wx.StaticText(panel, label=f"Username: {self.username}")
         hbox_top.Add(
             self.username_label,
             proportion=1,
             flag=wx.ALL | wx.ALIGN_CENTER_VERTICAL,
             border=5,
         )
-        hbox_top.Add(share_button, flag=wx.ALL, border=5)
-        hbox_top.Add(see_linked_button, flag=wx.ALL, border=5)
-        hbox_top.Add(browse_data_button, flag=wx.ALL, border=5)
-        hbox_top.Add(font_button, flag=wx.ALL, border=5)
-        hbox_top.Add(graph_button, flag=wx.ALL, border=5)
-        hbox_top.Add(history_button, flag=wx.ALL, border=5)
-        graph_button.Bind(wx.EVT_BUTTON, self.on_graph)
-        # add_event_button = wx.Button(panel, label="Add Event")
-        # add_event_button.Bind(wx.EVT_BUTTON, self.on_add_event)
-        # hbox_top.Add(add_event_button, flag=wx.ALL, border=5)
-        view_events_button = wx.Button(panel, label="View Events")
-        view_events_button.Bind(wx.EVT_BUTTON, self.on_view_events)
-        hbox_top.Add(view_events_button, flag=wx.ALL, border=5)
-        vbox.Add(hbox_top, flag=wx.EXPAND | wx.ALL, border=10)
 
-        # Split panel for editor and HTML view
-        self.splitter = wx.SplitterWindow(panel, style=wx.SP_LIVE_UPDATE)
+        # Button definitions with their event handlers
+        buttons = [
+            ("Share", self.share_summary),
+            # ("See Linked", None),
+            ("Browse Summaries", self.on_browse_data),
+            ("Font Options", self.on_font_selector),
+            ("See graph", self.on_graph),
+            ("See History", self.on_historic),
+            ("View Events", self.on_view_events),
+        ]
 
-        # Text editor for input
-        self.editor_panel = wx.Panel(self.splitter)
+        for label, handler in buttons:
+            button = wx.Button(panel, label=label)
+            if handler:
+                button.Bind(wx.EVT_BUTTON, handler)
+            hbox_top.Add(button, flag=wx.ALL, border=5)
+
+        return hbox_top
+
+    def _create_main_content(self, panel):
+        """Create the main content area with editor and HTML view"""
+        splitter = wx.SplitterWindow(panel, style=wx.SP_LIVE_UPDATE)
+
+        # Create editor panel
+        self.editor_panel = wx.Panel(splitter)
         editor_sizer = wx.BoxSizer(wx.VERTICAL)
+
         self.editor = wx.TextCtrl(self.editor_panel, style=wx.TE_MULTILINE)
         self.editor.Bind(wx.EVT_TEXT, self.on_text_input)
         self.editor.Bind(wx.EVT_CHAR, self.on_char)
-        refresh_button = wx.Button(self.editor_panel, label="Refresh HTML View")
-        refresh_button.Bind(wx.EVT_BUTTON, self.on_refresh_html)
-        editor_sizer.Add(self.editor, proportion=1, flag=wx.EXPAND | wx.ALL, border=5)
-        editor_sizer.Add(refresh_button, flag=wx.ALL, border=5)
-        self.editor_panel.SetSizer(editor_sizer)
 
-        # HTML display panel
-        self.html_panel = wx.Panel(self.splitter)
-        html_sizer = wx.BoxSizer(wx.VERTICAL)
-        self.html_window = wx.html2.WebView.New(self.html_panel)
-        self.html_window.Bind(wx.html2.EVT_WEBVIEW_NAVIGATING, self.on_link_clicked)
-        html_sizer.Add(
-            self.html_window, proportion=1, flag=wx.EXPAND | wx.ALL, border=5
-        )
-        self.html_panel.SetSizer(html_sizer)
-
-        # Set up splitter
-        self.splitter.SplitVertically(self.editor_panel, self.html_panel)
-        self.splitter.SetSashPosition(400)
-
-        vbox.Add(self.splitter, proportion=1, flag=wx.EXPAND | wx.ALL, border=10)
-
-        # Bottom controls (Export, Import, Summarize)
-        hbox_bottom = wx.BoxSizer(wx.HORIZONTAL)
-        share_button.Bind(wx.EVT_BUTTON, self.share_summary)
-        # Export button with dropdown
-        export_button = wx.Button(panel, label="Export")
-        export_button.Bind(wx.EVT_BUTTON, self.show_export_menu)
-        hbox_bottom.Add(export_button, flag=wx.ALL, border=5)
-
-        # Import button with dropdown
-        import_button = wx.Button(panel, label="Import")
-        import_button.Bind(wx.EVT_BUTTON, self.show_import_menu)
-        hbox_bottom.Add(import_button, flag=wx.ALL, border=5)
-
-        # Summarize button
-        summarize_button = wx.Button(panel, label="Summarize with LLM")
-        summarize_button.Bind(wx.EVT_BUTTON, self.on_summarize)
-        hbox_bottom.Add(summarize_button, flag=wx.ALL, border=5)
-
-        hbox_bottom.Add(save_button, flag=wx.ALL, border=5)
-        vbox.Add(hbox_bottom, flag=wx.ALIGN_CENTER_HORIZONTAL | wx.ALL, border=10)
-
-        # Set the main layout
-        panel.SetSizer(vbox)
-
-        # Bind browse data button
-        browse_data_button.Bind(wx.EVT_BUTTON, self.on_browse_data)
-
-        # Set default font info
-        self.current_font = {"name": "Blackadder ITC", "url": None, "from_url": False}
+        # Set font
         font = wx.Font(
             12,
             wx.FONTFAMILY_DEFAULT,
@@ -151,16 +176,49 @@ class MainFrame(wx.Frame):
             self.current_font["name"],
         )
         self.editor.SetFont(font)
-        # Initialize HTML view
-        self.prev_content = ""
-        self.last_update_time = 0
-        self.UPDATE_THROTTLE_INTERVAL = 2.0
-        self.update_html_view()
-        self.carousel = None
-        self.events_dialog = None
-        self.historic = False
 
-    def on_graph(self, event):
+        refresh_button = wx.Button(self.editor_panel, label="Refresh HTML View")
+        refresh_button.Bind(wx.EVT_BUTTON, self.on_refresh_html)
+
+        editor_sizer.Add(self.editor, proportion=1, flag=wx.EXPAND | wx.ALL, border=5)
+        editor_sizer.Add(refresh_button, flag=wx.ALL, border=5)
+        self.editor_panel.SetSizer(editor_sizer)
+
+        # Create HTML panel
+        self.html_panel = wx.Panel(splitter)
+        html_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.html_window = wx.html2.WebView.New(self.html_panel)
+        self.html_window.Bind(wx.html2.EVT_WEBVIEW_NAVIGATING, self.on_link_clicked)
+        html_sizer.Add(
+            self.html_window, proportion=1, flag=wx.EXPAND | wx.ALL, border=5
+        )
+        self.html_panel.SetSizer(html_sizer)
+
+        # Set up splitter
+        splitter.SplitVertically(self.editor_panel, self.html_panel)
+        splitter.SetSashPosition(400)
+
+        return splitter
+
+    def _create_bottom_controls(self, panel):
+        """Create the bottom control buttons"""
+        hbox_bottom = wx.BoxSizer(wx.HORIZONTAL)
+
+        buttons = [
+            ("Export", self.show_export_menu),
+            ("Import", self.show_import_menu),
+            ("Summarize with LLM", self.on_summarize),
+            ("Save", self.on_save),
+        ]
+
+        for label, handler in buttons:
+            button = wx.Button(panel, label=label)
+            button.Bind(wx.EVT_BUTTON, handler)
+            hbox_bottom.Add(button, flag=wx.ALL, border=5)
+
+        return hbox_bottom
+
+    def on_graph(self, _):
         # print("Getting graph")
         if self.historic:
             self.net.send_message(
@@ -169,11 +227,7 @@ class MainFrame(wx.Frame):
             return
         self.net.send_message(self.net.build_message("GETGRAPH", []))
 
-    def enable_listen(self, event):
-        # self.awaiting_update = True
-        pass
-
-    def on_historic(self, event):
+    def on_historic(self, _):
         self.net.send_message(self.net.build_message("GETHISTORICLIST", []))
 
     def handle_error(self, _, explaination, net):
@@ -181,7 +235,6 @@ class MainFrame(wx.Frame):
         wx.CallAfter(
             wx.MessageBox, f"Error: {explaination}", "Error", wx.OK | wx.ICON_ERROR
         )
-        return
 
     def handle_take_summaries(self, _, *params, net):
         summaries = []
@@ -218,10 +271,11 @@ class MainFrame(wx.Frame):
                 self.events_dialog.Destroy()
 
             # Show events dialog
-            self.events_dialog = EventsDialog(events, self, self.net,debug=True)
+            self.events_dialog = EventsDialog(events, self, self.net, debug=True)
             self.events_dialog.ShowModal()
-            self.events_dialog.Destroy()
-            self.events_dialog = None
+            # self.events_dialog.Destroy()
+            # self.events_dialog = None
+
         wx.CallAfter(show_events)
 
     def handle_event_success(self, *params, net):
@@ -231,6 +285,8 @@ class MainFrame(wx.Frame):
             "Success",
             wx.OK | wx.ICON_INFORMATION,
         )
+        if not self.dialog:
+            return
         wx.CallAfter(self.dialog.Destroy)
 
     def save_handlers(self, *params, net):
@@ -238,6 +294,7 @@ class MainFrame(wx.Frame):
 
     def on_file_content(self, *params, net):
         def update_editor():
+            assert self.editor is not None
             self.editor.AppendText("~".join(params[1:]))
             self.update_html_view()
 
@@ -283,14 +340,22 @@ class MainFrame(wx.Frame):
                 wx.OK | wx.ICON_ERROR,
             )
 
-    def on_summary_recived(self,s, *params, net):
+    def on_summary_recived(self, _, *params, net):
         def update_summary():
             summ = params[0]
+            assert self.editor is not None
             start, end = self.editor.GetSelection()
             self.editor.Replace(start, end, summ)
             self.update_html_view()
 
         wx.CallAfter(update_summary)
+
+    def handle_gcal(self, _, *params, net):
+        if not self.events_dialog:
+            print("ERRROR!")
+            return
+        print("GOT A EVENTS LIST")
+        self.events_dialog.on_gcal_events(self, params, net=net)
 
     def listen_for_changes(self, *_):
         """Optimized listening thread with better error handling"""
@@ -298,12 +363,12 @@ class MainFrame(wx.Frame):
             "ERROR": self.handle_error,
             "TAKESUMMARIES": self.handle_take_summaries,
             "SAVE_SUCCESS": self.save_handlers,
-            # "EVENT_SUCCESS": lambda a,*params,net: wx.CallAfter(wx.MessageBox,f'Event created successfully','Success',wx.OK | wx.ICON_INFORMATION),# self.handle_event_success,
             "FILECONTENT": self.on_file_content,
             "SUMMARY": self.on_summary_recived,
             "TAKEEVENTS": self.handle_take_events,
             "INFO": self.handle_info,
             "TAKEUPDATE": self.take_update,
+            "TAKEUPDATE2": self.take_update,
             "SHARE_SUCCESS": lambda a, *params, net: wx.CallAfter(
                 wx.MessageBox,
                 f"Summary shared with {params[0]}",
@@ -315,6 +380,7 @@ class MainFrame(wx.Frame):
             "TAKEGRAPH": self.handle_graph,
             "TAKESUMMARYLINK": self.handle_take_link,
             "HISTORICLIST": self.get_historic_list,
+            "GCAL_EVENTS": self.handle_gcal,
         }
 
         self.net.add_handlers(self.handlers)
@@ -333,7 +399,7 @@ class MainFrame(wx.Frame):
                 traceback.print_exc()
                 time.sleep(1)  # Prevent tight error loop
 
-    def share_summary(self, event):
+    def share_summary(self, _):
         # print("Sharing summary")
         dialog = wx.TextEntryDialog(
             None, "Enter the username to share with:", "Share Summary"
@@ -346,7 +412,6 @@ class MainFrame(wx.Frame):
         else:
             # print("Share canceled by user.")
             dialog.Destroy()
-            return
 
     def show_upcoming_events(self, events):
         # Ensure all event dates are datetime.date
@@ -394,14 +459,14 @@ class MainFrame(wx.Frame):
             events_list.SetItem(index, 2, days_label)
 
             # Set text color
-            for col in range(3):
+            for _ in range(3):
                 events_list.SetItemTextColour(index, color)
 
         vbox.Add(events_list, proportion=1, flag=wx.EXPAND | wx.ALL, border=10)
 
         # Continue button
         continue_button = wx.Button(panel, label="Continue")
-        continue_button.Bind(wx.EVT_BUTTON, lambda event: dialog.EndModal(wx.ID_OK))
+        continue_button.Bind(wx.EVT_BUTTON, lambda _: dialog.EndModal(wx.ID_OK))
         vbox.Add(continue_button, flag=wx.ALIGN_CENTER | wx.ALL, border=10)
 
         panel.SetSizer(vbox)
@@ -416,62 +481,85 @@ class MainFrame(wx.Frame):
         self.last_update_time = current_time
         return False
 
-    def normalize(self, text):
+    def normalize_text(self, text):
+        if not text:
+            return ""
         text = unicodedata.normalize("NFC", text)  # Normalize unicode
         text = text.replace("\r\n", "\n").replace("\r", "").rstrip()
         return text
 
-    def update_doc(self, event):
-        # if self.awaiting_update:
-        #     return #print("Awaiting update, not sending another")
-        if self.is_proccesing.is_set():
-            return  # print("Is proccesing, not sending another")
+    def show_error_message(self, message, title="Error"):
+        """Show error message in a thread-safe way"""
+        wx.CallAfter(wx.MessageBox, message, title, wx.OK | wx.ICON_ERROR)
+
+    def show_info_message(self, message, title="Info"):
+        """Show info message in a thread-safe way"""
+        wx.CallAfter(wx.MessageBox, message, title, wx.OK | wx.ICON_INFORMATION)
+
+    def show_success_message(self, message, title="Success"):
+        """Show success message in a thread-safe way"""
+        wx.CallAfter(wx.MessageBox, message, title, wx.OK | wx.ICON_INFORMATION)
+
+    def update_doc(self, _):
+        """Update document with improved error handling and logic"""
+        # Check various conditions that should prevent update
+        if self.is_processing.is_set():
+            print("Currently processing, skipping update")
+            return
+
         if self.is_update_throttled():
+            print("Update throttled")
             return
-        if self.cnt < 3 and self.last_char != ' ':
-            self.cnt += 1 
-            return
+
+        # Reset counter
         self.cnt = 0
-        with self.update_lock:
-            # old_text = self.prev_content
-            # new_text = self.editor.GetValue()
-            old_text = self.normalize(
-                self.prev_content
-            )  # self.prev_content.replace("\r\n", "\n").rstrip()
-            new_text = self.normalize(
-                self.editor.GetValue()
-            )  # self.editor.GetValue().replace("\r\n", "\n").rstrip()
-            # print(f"Old Text: {repr(old_text[:50])}")
-            # print(f"New Text: {repr(new_text[:50])}")
 
-            # Detect if content has actually changed
-            if old_text == new_text:
-                print("No Changes")
-                return self.send_changes([], False)
+        try:
+            with self.update_lock:
+                old_text = self.normalize_text(self.prev_content)
+                assert self.editor is not None
+                new_text = self.normalize_text(self.editor.GetValue())
 
-            # Use advanced diff algorithm
-            matcher = difflib.SequenceMatcher(None, old_text, new_text)
-            changes = []
+                # Detect if content has actually changed
+                if old_text == new_text:
+                    print("No changes detected")
+                    self.send_changes([], False)
+                    return
+                # Calculate changes using diff
+                changes = self._calculate_text_changes(old_text, new_text)
 
-            for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-                if tag == "equal":
-                    continue
+                # Send update if there are meaningful changes
+                self.send_changes(changes, new_text)
+                return
+        except Exception as e:
+            print(f"Error in update_doc: {e}")
+            traceback.print_exc()
+            return
 
-                change_type = {
-                    "replace": "UPDATE",
-                    "delete": "DELETE",
-                    "insert": "INSERT",
-                }.get(tag, tag)
+    def _calculate_text_changes(self, old_text, new_text):
+        """Calculate changes between old and new text"""
+        matcher = difflib.SequenceMatcher(None, old_text, new_text)
+        changes = []
 
-                content = new_text[j1:j2] if tag in ["replace", "insert"] else ""
-                if content == "" and tag != "delete":
-                    # print("Not a real change.")
-                    continue
-                changes.append({"cord": [i1, i2], "type": change_type, "cont": content})
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == "equal":
+                continue
 
-            # Only send update if there are meaningful changes
-            # if changes:
-            self.send_changes(changes, new_text)
+            change_type = {
+                "replace": "UPDATE",
+                "delete": "DELETE",
+                "insert": "INSERT",
+            }.get(tag, tag)
+
+            content = new_text[j1:j2] if tag in ["replace", "insert"] else ""
+
+            # Skip empty changes that aren't deletions
+            if not content and tag != "delete":
+                continue
+
+            changes.append({"cord": [i1, i2], "type": change_type, "cont": content})
+
+        return changes
 
     def send_changes(self, changes, new_text):
         # print("Found these changes: ", changes)
@@ -534,33 +622,47 @@ class MainFrame(wx.Frame):
         """Enhanced server update handler with input freezing"""
         try:
             # Indicate server update is in progress
-            self.is_proccesing.set()
+            print("Update params: ")
+            self.is_processing.set()
 
             # Decode update
             jsoned = json.loads(base64.b64decode(params[0]).decode())
+            print("Unjsoned; ")
+            print(jsoned)
 
             def update_ui():
                 try:
                     # Disable editor during update
+                    print("Disabling editor")
+                    assert self.editor is not None
                     self.editor.Disable()
 
                     # Update content
                     new_content = jsoned["doc_content"]
+                    print("Seting value")
                     self.editor.SetValue(new_content)
+                    print("Set value")
                     self.prev_content = new_content
                     self.update_html_view()
+                    print("UPDATED THE FUCKING UI")
+                    # clear the file first
 
+                    # with open("cont.txt","w") as f:
+                    #     f.write(new_content)
                     # Re-enable editor after short delay
-                    wx.CallLater(500, self.editor.Enable)
-
+                    # wx.CallLater(1000, self.editor.Enable)
+                    self.editor.Enable()
+                    self.is_processing.clear()
                     # Clear update flags
                     self.awaiting_update = False
-                    self.is_proccesing.clear()
+                    # self.is_processing.clear()
 
-                except Exception as _:
-                    # print(f"UI Update Error: {e}")
+                except Exception as e:
+                    print(f"UI Update Error: {e}")
+                    assert self.editor is not None
                     self.editor.Enable()
-                    self.is_proccesing.clear()
+                    self.is_processing.clear()
+                    raise e
 
             # Ensure UI update happens on main thread
             wx.CallAfter(update_ui)
@@ -568,11 +670,17 @@ class MainFrame(wx.Frame):
         except Exception as _:
             # print(f"Update Processing Error: {e}")
             traceback.print_exc()
-            self.is_proccesing.clear()
+            self.is_processing.clear()
 
-    def on_font_selector(self, event):
+    def on_font_selector(self, _):
+        """Handle font selection with improved error handling"""
         dialog = FontSelectorDialog(self, self.net)
-        if dialog.ShowModal() == wx.ID_OK:
+
+        if dialog.ShowModal() != wx.ID_OK:
+            dialog.Destroy()
+            return
+
+        try:
             font_name = dialog.selected_font
             from_url = dialog.from_url
             font_url = dialog.url_input.GetValue() if from_url else None
@@ -584,8 +692,26 @@ class MainFrame(wx.Frame):
                 "url": font_url,
                 "from_url": from_url,
             }
-            # print(self.current_font)
+
             # Apply the font to the editor
+            self._apply_font_to_editor(font_name)
+
+            # Handle custom font upload if needed
+            if from_url and font_path:
+                print("Would upload font to server")  # Placeholder for server upload
+
+            # Update the HTML view with the new font
+            self.update_html_view()
+
+        except Exception as e:
+            print(f"Error in font selection: {e}")
+            self.show_error_message(f"Error applying font: {str(e)}")
+        finally:
+            dialog.Destroy()
+
+    def _apply_font_to_editor(self, font_name):
+        """Apply font to editor with fallback handling"""
+        try:
             font = wx.Font(
                 12,
                 wx.FONTFAMILY_DEFAULT,
@@ -594,32 +720,41 @@ class MainFrame(wx.Frame):
                 False,
                 font_name,
             )
+            assert self.editor is not None
             self.editor.SetFont(font)
+        except Exception as e:
+            print(f"Error setting font {font_name}: {e}")
+            # Fallback to Arial
+            fallback_font = wx.Font(
+                12,
+                wx.FONTFAMILY_DEFAULT,
+                wx.FONTSTYLE_NORMAL,
+                wx.FONTWEIGHT_NORMAL,
+                False,
+                "Arial",
+            )
+            assert self.editor is not None
+            self.editor.SetFont(fallback_font)
+            self.current_font["name"] = "Arial"
 
-            # If it's a custom font, upload it to the server
-            if from_url and font_path:
-                # self.upload_font_to_server(font_path, font_name, font_url)
-                print("Uploading font to server")
-            # Update the HTML view with the new font
-            # self.send_update()
-            self.update_html_view()
-
-        dialog.Destroy()
     def on_char(self, event):
         keycode = event.GetKeyCode()
         if 32 <= keycode <= 126:  # Printable ASCII
             self.last_char = chr(keycode)
-            print("Current char:", self.last_char)
+            # print("Current char:", self.last_char)
         event.Skip()
-    def on_text_input(self, event):
+
+    def on_text_input(self, _):
         # Store current position and content
+        assert self.editor is not None
         current_pos = self.editor.GetInsertionPoint()
         current_content = self.editor.GetValue()
         # Continue with existing functionality
 
         text_pos = current_pos - 1
         if text_pos < 2:
-            return self.update_html_view()
+            self.update_html_view()
+            return
         cont = current_content
 
         # Adjust for newlines
@@ -639,15 +774,17 @@ class MainFrame(wx.Frame):
         # print("Re rendering")
         self.update_html_view()
 
-    def on_refresh_html(self, event):
+    def on_refresh_html(self, _):
         self.update_html_view()
 
     def update_html_view(self):
         """Convert text content to HTML and update the HTML window"""
+        assert self.editor is not None
         content = self.editor.GetValue()
         html = self.convert_text_to_html(content)
         self.html_content = html
         # self.html_window.RunScript(f"document.innerHTML = '{html}'")
+        assert self.html_window is not None
         self.html_window.SetPage(html, "about:blank")
 
     def html_to_text(self, content):
@@ -886,6 +1023,7 @@ class MainFrame(wx.Frame):
                 self.net.get_message_params(self.net.recv_message())[0]
             ).decode()
             # print("THE CONTENT: ", cont)
+            assert self.editor is not None
             self.editor.SetValue(cont)
             self.prev_content = cont
             self.update_html_view()
@@ -902,12 +1040,13 @@ class MainFrame(wx.Frame):
         #     # Open external links in the default browser
         #     wx.LaunchDefaultBrowser(link)
 
-    def on_summarize(self, event):
+    def on_summarize(self, _):
+        assert self.editor is not None
         selected = self.editor.GetStringSelection()
         # print("Currently selecting : ", selected)
         self.net.send_message(self.net.build_message("SUMMARIZE", [selected]))
 
-    def show_export_menu(self, event):
+    def show_export_menu(self, _):
         # print("Showing export menu")
         menu = wx.Menu()
         for label, handler in [
@@ -921,7 +1060,7 @@ class MainFrame(wx.Frame):
             menu.Append(item)
         self.PopupMenu(menu)
 
-    def show_import_menu(self, event):
+    def show_import_menu(self, _):
         # print("Showing import menu")
         menu = wx.Menu()
         for label, handler in [
@@ -936,7 +1075,7 @@ class MainFrame(wx.Frame):
             menu.Append(item)
         self.PopupMenu(menu)
 
-    def import_from_file(self, event):
+    def import_from_file(self, _):
         # Open a file dialog to select a File
         dialog = wx.FileDialog(
             self,
@@ -951,10 +1090,10 @@ class MainFrame(wx.Frame):
             self.net.build_message("GETFILECONTENT", [os.path.basename(path)])
         )
 
-    def on_view_events(self, event):
+    def on_view_events(self, _):
         self.net.send_message(self.net.build_message("GETEVENTS", []))
 
-    def on_add_event(self, event):
+    def on_add_event(self, _):
         dialog = wx.Dialog(self, title="Add New Event", size=(400, 300))
         panel = wx.Panel(dialog)
 
@@ -1022,24 +1161,25 @@ class MainFrame(wx.Frame):
             self.dialog = dialog
             # might be better to create the handler dynamically here, rather than have all state in the class
 
-    def export_as_markdown(self, event):
+    def export_as_markdown(self, _):
         # print("Exporting as Markdown")
         self.export_file("md")
 
-    def export_as_pdf(self, event):
+    def export_as_pdf(self, _):
         # print("Exporting as PDF")
         self.export_file("pdf")
 
-    def export_as_html(self, event):
+    def export_as_html(self, _):
         # print("Exporting as HTML")
         # For HTML, we could directly use our HTML content
         self.export_file("html", use_html=True)
 
-    def export_as_txt(self, event):
+    def export_as_txt(self, _):
         # print("Exporting as TXT")
         self.export_file("txt")
 
     def export_file(self, ext, use_html=False):
+        """Export file with improved error handling"""
         dialog = wx.FileDialog(
             self,
             message="Save file as ...",
@@ -1048,78 +1188,83 @@ class MainFrame(wx.Frame):
             wildcard=f"{ext.upper()} files (*.{ext})|*.{ext}",
             style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT,
         )
+
         if dialog.ShowModal() == wx.ID_CANCEL:
+            dialog.Destroy()
             return
+
         path = dialog.GetPath()
         dialog.Destroy()
 
-        # # For HTML export, we can use our already formatted HTML content
-        # content = (
-        #     self.html_content if use_html and ext == "html" else self.editor.GetValue()
-        # )
-        #
-        # self.net.send_message(self.net.build_message("EXPORT", [content, ext]))
-        # inner_content = self.net.get_message_params(self.net.recv_message())[0]
-        if ext.lower() == "pdf":
-            # gross ill rewrite with all the rest
+        try:
+            if ext.lower() == "pdf":
+                self._export_as_pdf(path)
+                return
+            formatted_content = self._format_content_for_export(ext)
 
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(formatted_content)
+
+            self.show_success_message(f"Summary saved to {path}", "Export Successful")
+            return
+        except Exception as e:
+            print(f"Error exporting file: {e}")
+            self.show_error_message(f"Error saving file: {str(e)}")
+            return
+
+    def _export_as_pdf(self, path):
+        """Export content as PDF"""
+        try:
             return pdfkit.from_string(self.html_content, path)
-        formated_content = self.format_content(self.editor.GetValue(), ext)
-        # print("Writing: ", formated_content)
-        with open(path, "w") as f:
-            f.write(formated_content)
-        # with open(path, "wb") as f:
-        #     f.write(base64.b64decode(inner_content))
-        wx.MessageBox(
-            f"Summary saved to {path}", "Export Successful", wx.OK | wx.ICON_INFORMATION
-        )
+        except Exception as e:
+            self.show_error_message(f"Error creating PDF: {str(e)}")
+            return ""
 
-    def format_content(self, content, ext):
-        if ext.lower() == "html":
-            # print("HTML")
-            # print(self.html_content)
+    def _format_content_for_export(self, ext):
+        """Format content based on export type"""
+        if ext.lower() in ["html", "pdf"]:
             self.on_refresh_html(None)
             return self.html_content
-        # elif ext == "md" or ext == "txt":
-        #     return content
-        elif ext.lower() == "pdf":
-            self.on_refresh_html(None)
-            return self.html_content
-        return content
 
-    def import_from_markdown(self, event):
+        assert self.editor is not None
+        return self.editor.GetValue()
+
+    def import_from_markdown(self, _):
         # print("Importing from Markdown")
         file_text_content = self.get_file_content("md")
         if not file_text_content:
             return
+        assert self.editor is not None
         self.editor.SetValue(file_text_content)
         self.update_html_view()
 
-    def import_from_pdf(self, event):
+    def import_from_pdf(self, _):
         print("Importing from PDF")
         # Implementation would go here
 
-    def import_from_html(self, event):
+    def import_from_html(self, _):
         # print("Importing from HTML")
         # Implementation would go here
         file_text_content = self.get_file_content("html")
         if not file_text_content:
             return
         # preform the reverse of convert_text_to_html
+        assert self.editor is not None
         self.editor.SetValue(self.html_to_text(file_text_content))
         self.update_html_view()
         return
 
-    def import_from_txt(self, event):
+    def import_from_txt(self, _):
         # print("Importing from TXT")
         # Implementation would go here
         file_text_content = self.get_file_content("txt")
         if not file_text_content:
             return
+        assert self.editor is not None
         self.editor.SetValue(file_text_content)
         self.update_html_view()
 
-    def get_file_content(self, ext):
+    def get_file_content(self, _):
         # Open a file dialog to select a File
         # return its text content for txt and md
         # returns its html for pdf and html
@@ -1129,18 +1274,20 @@ class MainFrame(wx.Frame):
             style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST,
         )
         if dialog.ShowModal() == wx.ID_CANCEL:
-            return
+            dialog.Destory()
+            return b""
+
         path = dialog.GetPath()
         # if path.endswith(".pdf"):
         #     return self.get_pdf_content(path)
         dialog.Destroy()
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return f.read()
 
     # def get_pdf_content(self, path):
     #     # convert pdf to html using pdfkit
     #     return pdfkit.
-    def on_browse_data(self, event):
+    def on_browse_data(self, _):
         wx.MessageBox(
             f"Browsing data for user: {self.username}",
             "Info",
@@ -1167,7 +1314,7 @@ class MainFrame(wx.Frame):
         carousel.ShowModal()
         carousel.Destroy()
 
-    def on_save(self, event):
+    def on_save(self, _):
         # print("Saving")
 
         # Prompt the user for a title
@@ -1193,6 +1340,7 @@ class MainFrame(wx.Frame):
         font_info_str = f"{font_info['name']}|{font_info['url']}"
 
         # Build and send the save message
+        assert self.editor is not None
         self.net.send_message(
             self.net.build_message(
                 "SAVE", [title, self.editor.GetValue(), font_info_str]
@@ -1207,6 +1355,7 @@ class MainFrame(wx.Frame):
                 dic = pickle.loads(base64.b64decode(params[0]))
                 cont = dic["data"].decode()
                 dicty = {"font": dic["summ"].font}
+                assert self.editor is not None
                 self.editor.SetValue(cont)
                 self.prev_content = cont
                 dicty["font"] = dicty.get("font", "Arial")
@@ -1278,6 +1427,7 @@ class MainFrame(wx.Frame):
         self.historic = False
 
         def process_summary():
+            assert self.editor is not None
             try:
                 dic = pickle.loads(base64.b64decode(params[0]))
                 cont = dic["data"].decode()
