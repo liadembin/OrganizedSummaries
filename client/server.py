@@ -36,7 +36,7 @@ historic_id_per_sock = {}
 handlers_per_sock_per_path = {}
 doc_changes = {}
 EVENT_DAY_REMIND = 7
-USE_MYSQL = False
+USE_MYSQL = True
 user_cursors = {}
 change_history = {}
 user_selections = {}
@@ -51,7 +51,7 @@ class LockType(Enum):
 
 
 LOCK_GRANULARITY = LockType.CHARACTER  # Can be changed to WORD or LINE
-ENABLE_OPERATIONAL_TRANSFORM = not True  # Enable advanced conflict resolution
+ENABLE_OPERATIONAL_TRANSFORM = not not True  # Enable advanced conflict resolution
 MAX_HISTORY_LENGTH = 100
 
 
@@ -225,15 +225,6 @@ def handle_file(db_manager, path, *, net: networkManager.NetworkManager) -> bool
         print("NOT logged in")
         net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
         return True
-    if (
-        # "." in path or
-        ".." in path
-        or path.startswith("/")
-        or path.startswith("\\")
-        or ":" in path
-    ):
-        net.send_message(net.build_message("ERROR", ["INVALID PATH"]))
-        return True
     # with open(f"./data/{id}/tmp/{path}", "rb") as jf
     if not os.path.exists(f"./data/{user_id}/tmp"):
         print("Path does not exist")
@@ -293,12 +284,7 @@ def handle_ocr(db_manager, path, net: networkManager.NetworkManager) -> bool:
         print("NOT logged in")
         net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
         return True
-    if (
-        # "." in path or
-        ".." in path
-        or path.startswith("/")
-        or path.startswith("\\")
-    ):
+    if "." in path or ".." in path or path.startswith("/") or path.startswith("\\"):
         net.send_message(net.build_message("ERROR", ["INVALID PATH"]))
         return True
     real_path = f"./data/{db_manager.get_id_per_sock(net.sock)}/tmp/{path}"
@@ -516,44 +502,28 @@ def handle_update_document(
 def handle_share_summary(
     db_manager: DbManager, username, net: networkManager.NetworkManager
 ) -> bool:
-    # Get the current user's ID from their socket
-    current_user_id = db_manager.get_id_per_sock(net.sock)
-
-    # Check if user is logged in
+    user_id = db_manager.get_id_per_sock(net.sock)
     if not db_manager.get_is_sock_logged(net.sock):
         print("NOT logged in")
         net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
         return True
-
-    # Find the summary ID that the current user has open
     summary_id = -1
     for k, v in ids_per_summary_id.items():
-        if current_user_id in v:
+        if user_id in v:
             summary_id = k
             break
-
     if summary_id == -1:
         net.send_message(net.build_message("ERROR", ["NO SUMMARY OPENED"]))
         return True
-
-    # Get the target user ID by username (the user to share WITH)
-    target_user_id = db_manager.get_id_by_username(username)
-    if target_user_id == -1:
+    user_id = db_manager.get_id_by_username(username)
+    if user_id == -1:
         net.send_message(net.build_message("ERROR", ["USER NOT FOUND"]))
         return True
-
-    print("Calling share summary with id: ", summary_id, " to user: ", target_user_id)
-
-    # Share the summary: owner_id should be current_user_id, user_to_share_with should be target_user_id
-    success = db_manager.share_summary(
-        summary_id, current_user_id, target_user_id, "edit"
-    )
-
-    if not success:
+    succsess = db_manager.share_summary(summary_id, user_id, user_id, "edit")
+    if not succsess:
         net.send_message(net.build_message("ERROR", ["FAILED TO SHARE"]))
         return True
-
-    net.send_message(net.build_message("SHARE_SUCCESS", [username]))
+    net.send_message(net.build_message("SHARE_SUCCESS", []))
     return False
 
 
@@ -612,10 +582,6 @@ def get_historic_list(db_manager, *_, net: networkManager.NetworkManager) -> boo
         net.send_message(net.build_message("ERROR", ["NO SUMMARY OPENED"]))
         return True
     # read the directory save/{sid}/ (read sub directorys which are all timestamps)
-    if not os.path.exists(f"save/{sid}/"):
-        net.send_message(net.build_message("ERROR", ["NO HISTORIC DATA"]))
-        return True
-
     dirs = os.listdir(f"save/{sid}/")
     net.send_message(
         net.build_message(
@@ -739,29 +705,6 @@ def handle_import_gcal(db_manage, *_, net: networkManager.NetworkManager) -> boo
     return False
 
 
-def handle_add_font(db_manager, font_data, net: networkManager.NetworkManager) -> bool:
-    user_id = db_manager.get_id_per_sock(net.sock)
-    if not db_manager.get_is_sock_logged(net.sock):
-        print("NOT logged in")
-        net.send_message(net.build_message("ERROR", ["NOT LOGGED IN"]))
-        return True
-    unjsoned = json.loads(font_data)
-    font_name = unjsoned["name"]
-    from_url = unjsoned["from_url"]
-    url = unjsoned["url"]
-    sid = -1
-    for k, v in ids_per_summary_id.items():
-        if user_id in v:
-            sid = k
-            break
-    if sid == -1:
-        net.send_message(net.build_message("ERROR", ["NO SUMMARY OPENED"]))
-        return True
-
-    db_manager.add_font(sid, font_name if not url else url, from_url, url)
-    return False
-
-
 def thread_main(sock, addr, crypt):
     net: networkManager.NetworkManager | None = handle_key_exchange(sock, crypt)
     if net is None:
@@ -810,7 +753,6 @@ def thread_main(sock, addr, crypt):
     net.add_handler("LOADHISTORIC", load_historic_summary)
     net.add_handler("HISTORICGRAPH", handle_historic_graph)
     net.add_handler("IMPORT_GCAL", handle_import_gcal)
-    net.add_handler("SETFONT", handle_add_font)
     net_per_sock[sock] = net
     sock.settimeout(0.5)
     try:
@@ -1272,7 +1214,7 @@ def send_updates_to_users(sid, doc_content, font_info):
                     "font": font_info,
                 }
             )
-            print("Sending2: ", js)
+            print("Sending: ", js)
             net.send_message(
                 net.build_message(
                     "TAKEUPDATE",
@@ -1284,30 +1226,10 @@ def send_updates_to_users(sid, doc_content, font_info):
             print(f"Error sending update to client {client_id}: {e}")
 
 
-def summary_thread(sid, db_manager: DbManager | None):
+def summary_thread(sid, db_manager: DbManager):
     """
     Main thread function that processes document changes for a given summary ID
     """
-    if db_manager is None:
-        db_manager = DbManager()
-        db_manager.id_per_sock = id_per_sock
-        # with open("db_config.json", "rb") as f:
-        #     db_manager.connect_to_db(json.loads(f.read()))
-        if USE_MYSQL:
-            db_manager.connect_to_db(
-                {
-                    "host": os.getenv("DB_HOST"),
-                    "user": os.getenv("DB_USERNAME"),
-                    "password": (os.getenv("DB_PASSWORD")),
-                    "database": os.getenv("DB_NAME"),
-                    "port": os.getenv("DB_PORT"),
-                }
-            )
-        else:
-            db_manager.connect_to_sqlite(
-                {"db_type": "sqlite", "database": "dbconved.db"}
-            )
-
     doc_content = ""
     try:
         sid = int(sid)
@@ -1369,8 +1291,18 @@ def summary_thread(sid, db_manager: DbManager | None):
 
 def spawn_summary_thread(summ, uid, net, sid):
     global threads
+    db_manager = DbManager()
+    db_manager.connect_to_db(
+        {
+            "host": os.getenv("DB_HOST"),
+            "user": os.getenv("DB_USERNAME"),
+            "password": (os.getenv("DB_PASSWORD")),
+            "database": os.getenv("DB_NAME"),
+            "port": os.getenv("DB_PORT"),
+        }
+    )
     lock_per_doc[sid] = threading.Lock()
-    thread = Thread(target=summary_thread, args=(sid, None))
+    thread = Thread(target=summary_thread, args=(sid, db_manager))
     thread.start()
     # thread.join()
     threads.append(thread)

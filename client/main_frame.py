@@ -260,13 +260,14 @@ class MainFrame(wx.Frame):
     def handle_take_events(self, _, *params, net):
         events = []
         for event_data in params:
-            event = pickle.loads(base64.b64decode(event_data))
-            events.append(event)
+            if event_data:
+                event = pickle.loads(base64.b64decode(event_data))
+                events.append(event)
 
         def show_events():
-            if not events:
-                wx.MessageBox("No events found.", "Info", wx.OK | wx.ICON_INFORMATION)
-                return
+            # if not events:
+            #     wx.MessageBox("No events found.", "Info", wx.OK | wx.ICON_INFORMATION)
+            #     return
             if self.events_dialog:
                 self.events_dialog.Destroy()
 
@@ -647,39 +648,6 @@ class MainFrame(wx.Frame):
                     font_name = jsoned.get("font_name", "Arial")
                     # Apply font
                     self.current_font["name"] = font_name
-                    if font_name.startswith("http://") or font_name.startswith(
-                        "https://"
-                    ):
-                        # If the font is a URL, we need to handle it differently
-                        self.current_font["from_url"] = True
-                        self.current_font["url"] = font_name
-                        # download the font
-                        import tempfile, urllib, urllib.request
-
-                        temp_dir = tempfile.gettempdir()
-                        font_filename = os.path.basename(font_name)
-                        custom_font_path = os.path.join(temp_dir, font_filename)
-                        progress_dialog = wx.ProgressDialog(
-                            "Downloading Font",
-                            "Downloading...",
-                            maximum=100,
-                            parent=self,
-                            style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE,
-                        )
-
-                        def reporthook(blocknum, blocksize, totalsize):
-                            if totalsize > 0:
-                                percent = min(
-                                    int(blocknum * blocksize * 100 / totalsize), 100
-                                )
-                                progress_dialog.Update(percent)
-                                # print(f"Downloading font: {percent}%")
-
-                        urllib.request.urlretrieve(
-                            font_name, custom_font_path, reporthook
-                        )
-                        font_name = font_name.split("/")[-1].split(".")[0]
-                        progress_dialog.Destroy()
                     self._apply_font_to_editor(font_name)
                     self.update_html_view()
                     # clear the file first
@@ -732,9 +700,11 @@ class MainFrame(wx.Frame):
 
             # Apply the font to the editor
             self._apply_font_to_editor(font_name)
-            self.net.send_message(
-                self.net.build_message("SETFONT", [json.dumps(self.current_font)])
-            )
+
+            # Handle custom font upload if needed
+            if from_url and font_path:
+                print("Would upload font to server")  # Placeholder for server upload
+
             # Update the HTML view with the new font
             self.update_html_view()
 
@@ -746,7 +716,6 @@ class MainFrame(wx.Frame):
 
     def _apply_font_to_editor(self, font_name):
         """Apply font to editor with fallback handling"""
-
         try:
             font = wx.Font(
                 12,

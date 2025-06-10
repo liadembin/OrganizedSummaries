@@ -1,0 +1,33 @@
+[MESSAGES CONTROL]
+# Disable specific warnings
+disable=
+    no-member,  # E1101 - wx module dynamic attributes
+    too-many-instance-attributes,  # R0902
+    too-many-public-methods,  # R0904
+    too-many-lines,  # C0302 - for large GUI files
+    import-outside-toplevel,  # C0415 - sometimes needed in methods
+    broad-exception-caught,  # W0718 - for GUI error handling
+    missing-function-docstring,
+    unused-argument,
+    redefined-outer-name
+[DESIGN]
+# Increase limits for GUI classes
+max-attributes=50
+max-public-methods=100
+max-locals=20
+max-branches=20
+max-statements=100
+
+[FORMAT]
+max-line-length=120
+
+[BASIC]
+# Allow certain naming patterns common in GUI development
+good-names=i,j,k,ex,Run,_,e,f,x,y,id,ok
+
+[TYPECHECK]
+# Ignore missing members for these modules
+ignored-modules=wx,wx.html2,wx.adv
+
+# Generated members (helps with dynamic attributes)
+generated-members=wx.*

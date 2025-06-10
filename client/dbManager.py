@@ -6,7 +6,7 @@ import pickle
 import re
 import shutil
 import unittest
-import socket
+
 # import hashlib
 import uuid
 from dataclasses import dataclass, field
@@ -377,9 +377,9 @@ class DbManager:
             """
             self.cursor.execute(query, (summary_id,))
             result = self.cursor.fetchone()
-            print("Result of ownership check: ", result)
+
             # If no result is found or the owner doesn't match
-            if result is None or int(result["ownerId"]) != int(owner_id):
+            if result is None or result["ownerId"] != owner_id:
                 print("User does not own this summary.")
                 return False
 
@@ -770,15 +770,6 @@ class DbManager:
         except (Error, IOError) as e:
             print(f"Error deleting summary: {e}")
             return False
-    def add_font(self,sid,name,is_url,url):
-        update_query = "UPDATE Summary SET font = %s WHERE id = %s"
-        self.cursor.execute(update_query, (name, sid))
-        self.connection.commit()
-        get_query = "SELECT font FROM Summary WHERE id = %s"
-        self.cursor.execute(get_query, (sid,))
-        result = self.cursor.fetchone()
-        print("Result of font add: ", result)
-
 
     def get_event(self, uid, title):
         """Get an event by title for a user."""
